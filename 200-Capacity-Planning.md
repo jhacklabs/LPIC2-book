@@ -5,7 +5,7 @@ weights: "200.1 (وزن 6) + 200.2 (وزن 2)"
 os_target: "Arch Linux / Omarchy"
 tags: [lpic2, capacity-planning, monitoring, performance]
 ---
-
+p  
 # Topic 200: Capacity Planning
 
 > این درس هر دو زیرمبحث رسمی را پوشش می‌دهد:

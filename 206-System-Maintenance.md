@@ -1,9 +1,13 @@
 ---
-title: "Topic 206 — System Maintenance"
+title: Topic 206 — System Maintenance
 exam: LPIC-2 / 201-450
-weights: "206.1 (2) + 206.2 (3) + 206.3 (1)"
-os_target: "Arch Linux / Omarchy"
-tags: [lpic2, backup, packages, sourcecompile]
+weights: 206.1 (2) + 206.2 (3) + 206.3 (1)
+tags:
+  - lpic2
+  - backup
+  - packages
+  - sourcecompile
+os_target: Arch Linux / Omarchy
 ---
 
 # Topic 206: System Maintenance
