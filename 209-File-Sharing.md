@@ -1,172 +1,226 @@
 ---
-title: "Topic 209 — File Sharing"
+title: "Topic 209 — File Sharing (نسخه عمیق و کامل)"
 exam: LPIC-2 / 202-450
 weights: "209.1 (5) + 209.2 (3)"
 os_target: "Arch Linux / Omarchy"
-tags: [lpic2, samba, nfs]
+tags: [lpic2, samba, nfs, deep-dive]
 ---
 
-# Topic 209: File Sharing
+# Topic 209: File Sharing — راهنمای کامل و عمیق
 
-## ۱) مفهوم کلی
+---
 
-دو بخش:
-- **209.1** پیکربندی سرور Samba (اشتراک فایل با کلاینت‌های ویندوزی و لینوکسی، پروتکل SMB/CIFS)
-- **209.2** پیکربندی سرور NFS (اشتراک فایل استاندارد بین سیستم‌های یونیکس/لینوکس)
+# بخش اول — 209.1: Samba — پل بین دنیای لینوکس و ویندوز
 
-## ۲) چرا این مبحث مهم است؟
+## ۱.۱) چرا Samba اصلاً لازم است؟
 
-هر سازمانی که کلاینت‌های ویندوز و لینوکس را با هم دارد، به Samba نیاز دارد — این پل ارتباطی بین دو دنیای کاملاً متفاوت پروتکل فایل است. NFS هم استاندارد صنعتی برای اشتراک فایل بین سرورهای لینوکسی/یونیکسی است (مثلاً یک storage مرکزی که چند وب‌سرور آن را mount می‌کنند). از منظر امنیتی، هر دو پروتکل اگر نادرست پیکربندی شوند، می‌توانند فایل‌های حساس را به هر کسی روی شبکه در دسترس بگذارند — یکی از رایج‌ترین اشتباهات ادمین‌های تازه‌کار، share کردن با دسترسی write برای همه (`guest ok = yes` + `writable = yes` بدون محدودیت).
+ویندوز و لینوکس از پروتکل‌های به‌طور کامل متفاوتی برای اشتراک فایل روی شبکه استفاده می‌کنند. ویندوز از پروتکلی به نام **SMB/CIFS** (Server Message Block / Common Internet File System) استفاده می‌کند. **Samba** یک پیاده‌سازی متن‌باز از همین پروتکل SMB/CIFS است که به یک سرور لینوکسی اجازه می‌دهد **دقیقاً مثل یک سرور ویندوزی** رفتار کند — یعنی از دید یک کامپیوتر ویندوزی، یک سرور Samba هیچ فرقی با یک سرور فایل ویندوزی واقعی ندارد.
 
-## ۳) مثال‌های واقعی + روی سیستم خودم
+این وزن ۵ (سنگین‌ترین وزن تکی در کل LPIC-2) نشان می‌دهد چقدر Samba در دنیای واقعی سازمانی (که اغلب محیط‌های Mixed لینوکس/ویندوز دارند) اهمیت دارد.
 
-**واقعی:** یک سازمان با ۵۰ کامپیوتر ویندوزی و ۱۰ سرور لینوکسی از Samba استفاده می‌کند تا پوشه‌ی «اسناد مشترک» روی هر دو سیستم‌عامل قابل‌دسترسی باشد؛ همزمان همان سرورهای لینوکسی از NFS برای اشتراک فضای storage با یکدیگر استفاده می‌کنند.
+## ۱.۲) دو نقش اصلی: File Server در برابر Domain Controller
 
-**روی Omarchy:** می‌توانی Samba را نصب کنی و یک share تستی بسازی که حتی از موبایل یا یک ویندوز مجازی (VM) قابل‌مشاهده باشد — تمرین کاملاً امن است چون خودت کنترل کامل روی share را داری.
+Samba می‌تواند دو کار اساساً متفاوت انجام دهد:
+1. **File/Print Server** — صرفاً به‌اشتراک‌گذاری فایل و پرینتر (مثل یک NAS)
+2. **Domain Controller** (با Samba 4 و پروژه‌ی Samba AD) — عمل کردن به‌جای یک **Active Directory Domain Controller** واقعی ویندوزی — یعنی مدیریت متمرکز کاربران، گروه‌ها، و سیاست‌های امنیتی برای کل یک شبکه‌ی ویندوزی، بدون نیاز به هیچ سرور ویندوزی واقعی. این دومی پیچیدگی بسیار بیشتری دارد و بیشتر سرفصل رسمی LPIC-2 روی حالت اول (File Server) تمرکز دارد.
 
-## ۴) دستورات کامل
-
-### 209.1 — Samba
+## ۱.۳) فایل پیکربندی — عمیق روی هر بخش
 
 ```bash
 sudo pacman -S samba
-sudo systemctl enable --now smb nmb
-testparm                       # اعتبارسنجی فایل تنظیمات Samba (بسیار مهم قبل از restart)
-sudo smbpasswd -a username     # ساخت کاربر Samba (جدا از کاربر سیستم لینوکس)
-sudo smbstatus                 # نمایش اتصالات فعال و فایل‌های قفل‌شده
 ```
-فایل تنظیمات اصلی: `/etc/samba/smb.conf`
+فایل اصلی: `/etc/samba/smb.conf`
+
 ```ini
 [global]
-   workgroup = WORKGROUP
-   security = user
-   map to guest = Bad User
+    workgroup = WORKGROUP
+    server string = Samba Server
+    security = user
+    map to guest = bad user
+    log file = /var/log/samba/log.%m
+    max log size = 1000
 
 [shared]
-   path = /srv/samba/shared
-   browsable = yes
-   writable = yes
-   guest ok = no
-   valid users = @staff
-```
-> ⚠️ **هشدار امنیتی:** `guest ok = yes` یعنی هرکسی بدون رمز عبور می‌تواند به share متصل شود. همیشه `valid users` را برای share های حساس محدود کن.
-
-پارامترهای کلیدی: `security = user` (احراز هویت با کاربر/رمز، رایج‌ترین حالت)، `browsable` (نمایش در لیست شبکه یا نه)، `writable` (اجازه نوشتن).
-
-از سمت کلاینت لینوکسی:
-```bash
-smbclient -L //server_ip -U username    # لیست share های موجود
-smbclient //server_ip/shared -U username
-sudo mount -t cifs //server_ip/shared /mnt/samba -o username=user,password=pass
-```
-در fstab برای mount خودکار:
-```
-//server_ip/shared  /mnt/samba  cifs  username=user,password=pass,uid=1000  0  0
-```
-> ⚠️ نوشتن پسورد به‌صورت plain-text در fstab ناامن است؛ روش امن‌تر استفاده از فایل credentials جدا با دسترسی محدود (`chmod 600`) است:
-```
-//server_ip/shared  /mnt/samba  cifs  credentials=/etc/samba/creds,uid=1000  0  0
+    path = /srv/samba/shared
+    browsable = yes
+    writable = yes
+    guest ok = no
+    valid users = @staff
+    create mask = 0664
+    directory mask = 0775
 ```
 
-### 209.2 — NFS
+### بخش `[global]` — تنظیمات کلی سرور
 
-```bash
-sudo pacman -S nfs-utils
-sudo systemctl enable --now nfs-server
-```
-فایل تنظیمات export: `/etc/exports`
-```
-/srv/nfs/shared   192.168.1.0/24(rw,sync,no_subtree_check)
-/srv/nfs/readonly 192.168.1.0/24(ro,sync,no_root_squash)
-```
-> ⚠️ **هشدار امنیتی مهم:** `no_root_squash` یعنی کاربر root روی کلاینت، روی سرور NFS هم root می‌ماند — این یک ریسک امنیتی بزرگ است چون یک کلاینت compromise‌شده می‌تواند با دسترسی root به فایل‌های سرور دستکاری کند. پیش‌فرض امن `root_squash` است (root کلاینت را به یک کاربر بی‌اختیار مثل `nobody` تنزل می‌دهد).
+- **`workgroup`** — نام گروه‌کاری ویندوزی (معادل مسطح‌تر و ساده‌تر Active Directory Domain برای شبکه‌های کوچک)
+- **`security`** — تعیین می‌کند کاربران چطور احراز هویت شوند:
+  - `security = user` (رایج‌ترین) — هر کاربر باید نام‌کاربری/رمز عبور معتبر (که در سیستم Samba تعریف شده) ارائه دهد
+  - `security = share` (بسیار قدیمی، امروز عملاً منسوخ) — دسترسی بر اساس خود share، بدون نیاز به هویت کاربر مشخص
+  - `security = domain`/`ads` — احراز هویت را به یک Domain Controller واقعی ویندوزی/Samba AD واگذار می‌کند
+- **`map to guest = bad user`** — اگر کاربری با نام‌کاربری نامعتبر وارد شود، به‌جای رد کامل، او را به‌عنوان کاربر مهمان (guest) در نظر بگیر — این برای شبکه‌های کوچک با نیاز به دسترسی مهمان کاربردی است.
+
+### بخش `[shared]` — تعریف یک share خاص
+
+- **`path`** — مسیر واقعی روی دیسک لینوکس که به‌اشتراک گذاشته می‌شود
+- **`browsable`** — آیا این share در فهرست share های قابل‌مرور (وقتی کسی از ویندوز به `\\server\` می‌رود) نشان داده شود
+- **`valid users = @staff`** — علامت `@` یعنی این یک **گروه** است (گروه یونیکسی `staff`)، نه یک کاربر تکی — فقط اعضای این گروه اجازه دارند
+- **`create mask`/`directory mask`** — این‌ها مستقیماً به مفهوم `umask` که در LPIC-1 دیدی مرتبط‌اند: وقتی یک کاربر ویندوزی از طریق Samba فایلی می‌سازد، این مقادیر مشخص می‌کنند فایل/پوشه‌ی جدید روی سیستم لینوکس با چه permission یونیکسی (rwxrwxrwx) ساخته شود — این پل بین دنیای permission ویندوزی (ACL) و یونیکسی (rwx) است.
+
+## ۱.۴) کاربران Samba — چرا جدا از کاربران سیستم؟
+
+نکته‌ی بسیار مهم و رایج‌ترین سؤال 209.1: کاربران Samba **یک پایگاه‌داده‌ی رمز عبور کاملاً جداگانه** از کاربران معمولی لینوکس (`/etc/passwd`/`/etc/shadow`) دارند، به این دلیل که پروتکل SMB از یک روش رمزنگاری/هش متفاوت (تاریخاً NTLM) برای رمز عبور استفاده می‌کند که با هش رمز عبور لینوکسی (که در `/etc/shadow` است) سازگار نیست.
 
 ```bash
-sudo exportfs -ra              # اعمال مجدد تنظیمات /etc/exports بدون restart کامل
-sudo exportfs -v                # نمایش exportهای فعال
-showmount -e server_ip          # از سمت کلاینت: دیدن exportهای در دسترس یک سرور
+sudo useradd -M -s /sbin/nologin samba_user     # اول باید کاربر لینوکسی معادل وجود داشته باشد (بدون home، بدون shell واقعی چون فقط برای Samba است)
+sudo smbpasswd -a samba_user                      # افزودن این کاربر به پایگاه‌داده‌ی رمز عبور Samba (رمز عبور جداگانه پرسیده می‌شود)
+sudo smbpasswd -e samba_user                       # فعال‌سازی حساب (enable)
+sudo smbpasswd -x samba_user                        # حذف کامل از پایگاه‌داده‌ی Samba
+pdbedit -L                                            # لیست تمام کاربران Samba تعریف‌شده
 ```
-از سمت کلاینت:
+
+> ⚠️ نکته‌ی حیاتی: **باید اول کاربر لینوکسی وجود داشته باشد**، بعد کاربر Samba اضافه شود — Samba مستقل از سیستم عمل نمی‌کند، بلکه یک لایه‌ی اضافه روی کاربران موجود سیستم است (اما با رمز عبور جدا).
+
+## ۱.۵) ابزارهای تست و مدیریت از سمت لینوکس
+
 ```bash
-sudo mount -t nfs server_ip:/srv/nfs/shared /mnt/nfs
-```
-در fstab:
-```
-server_ip:/srv/nfs/shared  /mnt/nfs  nfs  defaults  0  0
-```
-گزینه‌های کلیدی export: `rw`/`ro` (خواندن/نوشتن)، `sync`/`async` (sync ایمن‌تر ولی کندتر — تغییرات قبل از پاسخ به کلاینت روی دیسک نوشته می‌شوند)، `no_subtree_check` (کاهش overhead بررسی امنیتی زیرشاخه، توصیه‌شده برای اکثر موارد).
-
-## ۵) نکات مهم آزمون LPIC
-
-- ✅ همیشه `testparm` را قبل از restart سرویس Samba اجرا کن — دقیقاً مثل `nginx -t`/`apachectl configtest` در Topic قبل.
-- ✅ فرق `root_squash` (امن، پیش‌فرض) و `no_root_squash` (خطرناک) را دقیق بدان — سؤال کلاسیک امنیتی آزمون.
-- ✅ کاربران Samba جدا از کاربران سیستم مدیریت می‌شوند (`smbpasswd`)، حتی اگر نام یکسان داشته باشند.
-- ✅ `exportfs -ra` برای اعمال تغییرات `/etc/exports` بدون قطع اتصالات فعلی — نکته عملی رایج.
-- ✅ `showmount -e` ابزار کلاینت برای کشف exportهای یک سرور NFS است.
-- ✅ نسخه‌های NFS (NFSv3 در مقابل NFSv4) از نظر مفهومی متفاوتند: NFSv4 نیازی به `portmapper`/`rpcbind` جداگانه ندارد و امنیت بهتری دارد — فقط باید بدانی این تفاوت وجود دارد.
-
-## ۶) تمرین عملی امن
-
-> این تمرین کاملاً روی `localhost`/شبکه محلی خودت انجام می‌شود.
-
-**Samba:**
-```bash
-sudo pacman -S samba
-mkdir -p ~/samba_test_share
-sudo tee -a /etc/samba/smb.conf <<'EOF'
-
-[test]
-   path = /home/YOUR_USER/samba_test_share
-   browsable = yes
-   writable = yes
-   guest ok = no
-   valid users = YOUR_USER
-EOF
-testparm
-sudo smbpasswd -a $USER
+testparm                       # بررسی صحت syntax فایل smb.conf — دقیقاً معادل مفهومی apachectl configtest / named-checkconf
+smbclient -L localhost -U samba_user      # لیست share های موجود روی سرور، از خط فرمان (مثل کلاینت اف‌تی‌پی)
+smbclient //localhost/shared -U samba_user  # اتصال تعاملی به یک share خاص
 sudo systemctl enable --now smb nmb
-smbclient -L //localhost -U $USER
 ```
+`nmb` (NetBIOS Name Service) سرویس جداگانه‌ای است که وظیفه‌اش پاسخ به کشف نام‌های NetBIOS در شبکه است (تاریخاً چطور کامپیوترهای ویندوزی همدیگر را با نام، بدون DNS، پیدا می‌کردند) — امروز با DNS مدرن اهمیت کمتری دارد اما برای سازگاری با شبکه‌های ویندوزی قدیمی‌تر هنوز رایج است.
 
-**NFS:**
+## ۱.۶) mount کردن یک share از سمت لینوکس (به‌عنوان کلاینت)
+
+```bash
+sudo mount -t cifs //server/shared /mnt/windows_share -o username=user,password=pass
+```
+یا به‌صورت دائمی در fstab:
+```
+//server/shared  /mnt/windows_share  cifs  credentials=/etc/samba/creds,uid=1000  0  0
+```
+فایل `credentials` (که باید permission بسیار محدود ۶۰۰ داشته باشد چون رمز عبور را خام نگه می‌دارد) به این شکل است:
+```
+username=user
+password=pass
+```
+این روش امن‌تر از نوشتن مستقیم رمز عبور در fstab است (چون `fstab` معمولاً world-readable است و هرکسی می‌تواند رمز را ببیند).
+
+## ۱.۷) نکات مهم آزمون برای 209.1
+
+- ✅ `security = user` رایج‌ترین حالت است؛ `security = share` عملاً منسوخ شده.
+- ✅ کاربران Samba یک پایگاه‌داده‌ی جدا از `/etc/shadow` دارند — همیشه اول کاربر لینوکسی، بعد `smbpasswd -a`.
+- ✅ `create mask`/`directory mask` پل بین permission ویندوزی و یونیکسی است.
+- ✅ `testparm` همیشه قبل از اعمال تغییرات واقعی.
+- ✅ استفاده از فایل `credentials` به‌جای رمز خام در fstab برای mount کردن CIFS.
+
+---
+
+# بخش دوم — 209.2: NFS — اشتراک فایل بومی دنیای یونیکس/لینوکس
+
+## ۲.۱) NFS در برابر Samba — چرا هر دو وجود دارند
+
+اگر Samba برای تعامل با دنیای ویندوز است، **NFS** (Network File System) پروتکل بومی و تاریخی دنیای یونیکس/لینوکس برای اشتراک فایل است. برای دو سیستم لینوکسی که با هم فایل به‌اشتراک می‌گذارند، NFS معمولاً ساده‌تر برای پیکربندی است و بومی‌تر با مدل permission یونیکسی کار می‌کند (چون از همان مدل uid/gid استفاده می‌کند، نه ترجمه‌ی ACL مثل Samba).
+
+## ۲.۲) نسخه‌های NFS — تفاوت بنیادین NFSv3 و NFSv4
+
+این یکی از مهم‌ترین تفاوت‌های مفهومی این بخش است:
+
+- **NFSv3** (و قدیمی‌تر) — از یک پروتکل کمکی جداگانه به نام **RPC** (Remote Procedure Call) و سرویسی به نام `rpcbind` (که پورت‌های پویا برای سرویس‌های مختلف NFS مثل mountd، nfsd، statd، lockd تخصیص می‌دهد) استفاده می‌کند. این یعنی NFSv3 برای کار کردن به **چندین پورت مختلف و پویا** نیاز دارد — که پیکربندی فایروال را بسیار پیچیده می‌کند (باید یا محدوده‌ی وسیعی از پورت‌ها باز باشد، یا `rpcbind` را طوری تنظیم کنی که پورت‌های ثابت بدهد).
+- **NFSv4** — این مشکل را کاملاً حل کرد: تمام ارتباطات روی **یک پورت واحد (TCP 2049)** انجام می‌شود، بدون نیاز به `rpcbind` جداگانه — پیکربندی فایروال بسیار ساده‌تر می‌شود. NFSv4 همچنین بهبودهای امنیتی (پشتیبانی بومی‌تر از Kerberos) و کارایی (statefulness بهتر) دارد.
+
+> ⚠️ برای آزمون و برای دنیای واقعی امروز: **همیشه NFSv4 را ترجیح بده** مگر دلیل خاصی برای سازگاری با سیستم‌های خیلی قدیمی داشته باشی.
+
+## ۲.۳) پیکربندی سرور NFS
+
 ```bash
 sudo pacman -S nfs-utils
-mkdir -p ~/nfs_test_share
-echo "$HOME/nfs_test_share 127.0.0.1(rw,sync,no_subtree_check)" | sudo tee -a /etc/exports
-sudo systemctl enable --now nfs-server
-sudo exportfs -ra
-sudo exportfs -v
-showmount -e localhost
-sudo mkdir -p /mnt/nfs_test
-sudo mount -t nfs localhost:$HOME/nfs_test_share /mnt/nfs_test
-ls /mnt/nfs_test
-sudo umount /mnt/nfs_test
+```
+فایل تعریف share ها: `/etc/exports`
+
+```
+/srv/nfs/shared    192.168.1.0/24(rw,sync,no_subtree_check)
+/srv/nfs/readonly   192.168.1.0/24(ro,sync,no_root_squash)
 ```
 
-## ۷) خلاصه جدولی
+بیایید هر گزینه را عمیق باز کنیم:
+- **`rw`/`ro`** — خواندن‌و‌نوشتن یا فقط‌خواندنی
+- **`sync`/`async`** — `sync` یعنی سرور فقط بعد از این‌که تغییرات واقعاً روی دیسک نوشته شد، به کلاینت تأیید می‌دهد (ایمن‌تر، کندتر). `async` یعنی سرور فوراً تأیید می‌دهد حتی قبل از نوشتن واقعی روی دیسک (سریع‌تر، اما اگر سرور در همین فاصله کرش کند، داده از دست می‌رود). **پیش‌فرض و توصیه‌شده: `sync`**.
+- **`no_subtree_check`** — یک بهینه‌سازی امنیتی/کارایی: NFS به‌صورت پیش‌فرض هر درخواست را بررسی می‌کند که آیا فایل درخواستی واقعاً زیرمجموعه‌ی مسیر export شده هست یا نه (subtree checking) — این می‌تواند مشکلاتی با فایل‌هایی ایجاد کند که rename می‌شوند در حین باز بودن؛ غیرفعال کردنش (`no_subtree_check`) رایج و توصیه‌شده است برای export کردن کل یک فایل‌سیستم.
+- **`root_squash`** (پیش‌فرض) در برابر **`no_root_squash`** — این یکی از **مهم‌ترین مفاهیم امنیتی** کل این Topic است:
 
-| مفهوم | Samba | NFS |
+### Root Squash — چرا این‌قدر مهم است
+
+مشکل امنیتی: اگر کاربر root روی یک ماشین کلاینت، به یک NFS share متصل شود، به‌طور طبیعی توقع می‌رود چون root است، به همه‌چیز دسترسی کامل داشته باشد — این خطرناک است، چون root روی کلاینت لزوماً همان کسی نیست که باید root واقعی سرور فایل باشد (خصوصاً اگر کلاینت‌ها ماشین‌های دانشجویان/کاربران کمتر معتمد باشند که خودشان root ماشین محلی‌شان هستند).
+
+**`root_squash`** (رفتار پیش‌فرض و امن) یعنی: هر درخواستی که از کاربر **root** روی کلاینت بیاید، به‌طور خودکار به یک کاربر بدون‌امتیاز به نام **`nobody`** «Squash» (فشرده/تبدیل) می‌شود — یعنی حتی اگر روی کلاینت root باشی، روی این NFS share فقط به‌اندازه‌ی یک کاربر معمولی دسترسی داری.
+
+**`no_root_squash`** این محافظت را غیرفعال می‌کند — root کلاینت واقعاً root کامل روی share می‌شود. این فقط باید در موارد بسیار خاص و با اعتماد کامل به تمام کلاینت‌ها استفاده شود (مثلاً بین سرورهای مدیریتی خودت که کاملاً به آن‌ها اعتماد داری).
+
+```bash
+sudo exportfs -a              # اعمال (export) تمام تعریف‌های /etc/exports
+sudo exportfs -r               # بازخوانی (re-export) بعد از تغییر فایل
+sudo exportfs -v                # نمایش تمام export های فعلی، با گزینه‌هایشان
+sudo systemctl enable --now nfs-server
+```
+
+## ۲.۴) سمت کلاینت — mount کردن NFS
+
+```bash
+sudo mount -t nfs4 server:/srv/nfs/shared /mnt/nfsdata
+```
+یا در fstab برای دائمی کردن:
+```
+server:/srv/nfs/shared   /mnt/nfsdata   nfs4   defaults   0   0
+```
+
+```bash
+showmount -e server            # نمایش لیست تمام export های در دسترس روی یک سرور خاص (خیلی مفید برای کشف اولیه)
+```
+
+## ۲.۵) نکات مهم آزمون برای 209.2
+
+- ✅ تفاوت بنیادین NFSv3 (چند پورت پویا + rpcbind) و NFSv4 (یک پورت ثابت TCP 2049، پیچیدگی فایروال بسیار کمتر).
+- ✅ `sync` (پیش‌فرض، ایمن) در برابر `async` (سریع‌تر، ریسک از دست دادن داده در کرش).
+- ✅ **`root_squash`** (پیش‌فرض، امن — root کلاینت به nobody تبدیل می‌شود) در برابر **`no_root_squash`** (خطرناک، فقط برای موارد خاص) — این پرتکرارترین سؤال امنیتی کل Topic 209 است.
+- ✅ `exportfs -a`/`-r`/`-v` را از هم تفکیک کن.
+- ✅ `showmount -e` برای کشف export های موجود روی یک سرور.
+
+---
+
+## خلاصه‌ی جدولی نهایی کل Topic 209
+
+| زیرمبحث | مفهوم کلیدی | جزئیات |
 |---|---|---|
-| فایل تنظیمات | `/etc/samba/smb.conf` | `/etc/exports` |
-| اعتبارسنجی | `testparm` | (اعتبارسنجی ندارد، مستقیم `exportfs`) |
-| اعمال تغییرات بدون قطع | `smbcontrol` یا restart سبک | `exportfs -ra` |
-| کاربران | `smbpasswd -a` (جدا از سیستم) | بر اساس UID سیستم |
-| مشاهده اتصالات | `smbstatus` | `showmount -e` |
-| ریسک امنیتی کلیدی | `guest ok = yes` | `no_root_squash` |
-| کلاینت mount | `mount -t cifs` | `mount -t nfs` |
+| 209.1 | Samba چیست | پیاده‌سازی متن‌باز پروتکل SMB/CIFS ویندوز |
+| 209.1 | نقش | File Server یا Domain Controller (Samba AD) |
+| 209.1 | security mode | `user`(رایج) vs `share`(منسوخ) vs `domain/ads` |
+| 209.1 | کاربران جدا | `smbpasswd -a` (پایگاه‌داده مجزا از shadow) |
+| 209.1 | permission | `create mask`/`directory mask` (پل ویندوز↔یونیکس) |
+| 209.1 | ابزار | `testparm`, `smbclient`, mount با `credentials=` |
+| 209.2 | نسخه‌ها | NFSv3(چند پورت+rpcbind) vs NFSv4(یک پورت 2049) |
+| 209.2 | sync/async | ایمنی در برابر سرعت |
+| 209.2 | امنیت حیاتی | `root_squash`(پیش‌فرض امن) vs `no_root_squash`(خطر) |
+| 209.2 | ابزار | `exportfs -a/-r/-v`, `showmount -e` |
 
-## ۸) مایندمپ متنی
+## مایندمپ متنی کامل
 
 ```
 Topic 209: File Sharing
-├── 209.1 Samba
-│   ├── smb.conf: [global], [share]
-│   ├── smbpasswd, testparm, smbstatus
-│   ├── security = user
-│   └── mount -t cifs (fstab: credentials=)
-└── 209.2 NFS
-    ├── /etc/exports (rw/ro, sync/async, root_squash)
-    ├── exportfs -ra / -v
-    ├── showmount -e
-    └── mount -t nfs
+│
+├── 209.1 Samba (پل به دنیای ویندوز/SMB)
+│   ├── نقش: File Server یا Domain Controller
+│   ├── smb.conf: [global](workgroup,security) + [share](path,valid users)
+│   ├── security: user(رایج)/share(منسوخ)/domain-ads
+│   ├── کاربران جدا: useradd → smbpasswd -a (پایگاه‌داده مجزا)
+│   ├── create/directory mask (ویندوز ACL ↔ یونیکس rwx)
+│   ├── testparm, smbclient, nmb(NetBIOS)
+│   └── mount cifs + credentials= (نه رمز خام در fstab)
+│
+└── 209.2 NFS (بومی یونیکس/لینوکس)
+    ├── NFSv3: چند پورت پویا + rpcbind (فایروال پیچیده)
+    ├── NFSv4: یک پورت TCP 2049 (ساده‌تر، ترجیح‌داده‌شده)
+    ├── /etc/exports: rw/ro, sync(پیش‌فرض)/async, no_subtree_check
+    ├── ⚠️ root_squash(پیش‌فرض!) vs no_root_squash(خطر)
+    └── exportfs -a/-r/-v, showmount -e
 ```
