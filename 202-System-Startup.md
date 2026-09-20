@@ -1,154 +1,404 @@
 ---
-title: "Topic 202 — System Startup"
+title: "Topic 202 — System Startup (نسخه عمیق و کامل)"
 exam: LPIC-2 / 201-450
 weights: "202.1 (3) + 202.2 (4) + 202.3 (2)"
 os_target: "Arch Linux / Omarchy"
-tags: [lpic2, boot, systemd, grub]
+tags: [lpic2, boot, systemd, grub, deep-dive]
 ---
 
-# Topic 202: System Startup
+# Topic 202: System Startup — راهنمای کامل و عمیق
 
-## ۱) مفهوم کلی
+> این درس هم مثل ۲۰۱ به‌صورت عمیق نوشته شده: هدف فهم **کامل زنجیره‌ی بوت** از لحظه‌ی روشن شدن دکمه‌ی پاور تا رسیدن به صفحه‌ی لاگین است — نه فقط حفظ چند دستور.
 
-این Topic فرآیند کامل بوت شدن یک سیستم لینوکس را پوشش می‌دهد: از لحظه‌ای که پردازنده روشن می‌شود تا رسیدن به یک سیستم قابل‌استفاده. سه بخش دارد:
-- **202.1** شخصی‌سازی startup با systemd و SysV init
-- **202.2** بازیابی سیستم (recovery) هنگام خرابی بوت
-- **202.3** بوت‌لودرهای جایگزین (SYSLINUX، PXE و…)
+---
 
-## ۲) چرا این مبحث مهم است؟
+# بخش اول — 202.1: شخصی‌سازی فرآیند Startup
 
-وقتی سروری بوت نمی‌شود، هیچ SSH ای در کار نیست — فقط تو و کنسول. این لحظه‌ای‌ست که فهم عمیق GRUB، initramfs، و systemd targets نجات‌بخش می‌شود. Omarchy مستقیماً روی systemd ساخته شده، پس این Topic برایت کاملاً کاربردی و روزمره است — حتی مشکلات معمول مثل «سرویس فلان بعد از boot بالا نمی‌آید» دقیقاً همین دانش را می‌طلبد.
+## ۱.۱) کل زنجیره‌ی بوت، قدم‌به‌قدم
 
-## ۳) مثال‌های واقعی + روی سیستم خودم
+قبل از این‌که سراغ systemd برویم، باید کل مسیر را از اول ببینی، چون هر سؤال LPIC درباره‌ی «چرا سیستم بوت نمی‌شود» در واقع می‌پرسد «این خرابی در کدام قدم از این زنجیره اتفاق افتاده؟»
 
-**واقعی:** یک بروزرسانی اشتباه GRUB باعث می‌شود سرور یک دیتاسنتر بوت نشود؛ مهندس باید از طریق کنسول IPMI وارد `grub shell` شود و دستی کرنل و initrd درست را مشخص کند.
+```
+[۱] Power On
+     │
+[۲] Firmware: BIOS یا UEFI
+     │  (خودآزمایی سخت‌افزار POST، سپس پیدا کردن دستگاه بوت)
+     │
+[۳] Bootloader: GRUB (یا systemd-boot)
+     │  (بارگذاری کرنل + initramfs به RAM، تحویل کنترل به کرنل)
+     │
+[۴] Kernel Initialization
+     │  (کرنل خودش را باز می‌کند، سخت‌افزار پایه را می‌شناسد)
+     │
+[۵] initramfs اجرا می‌شود
+     │  (پیدا کردن و مونت فایل‌سیستم ریشه‌ی واقعی → switch_root)
+     │
+[۶] PID 1 اجرا می‌شود: systemd
+     │  (این اولین پردازه‌ی فضای کاربر است — از اینجا به بعد "userspace")
+     │
+[۷] systemd به سمت target پیش‌فرض می‌رود
+     │  (معمولاً graphical.target یا multi-user.target)
+     │
+[۸] سرویس‌ها به ترتیب وابستگی بالا می‌آیند
+     │
+[۹] صفحه‌ی لاگین / دسکتاپ آماده است
+```
 
-**روی Omarchy:** چون Arch/Omarchy از systemd به‌عنوان init استفاده می‌کند (نه SysV)، بیشترین تمرکز عملی‌ات باید روی `systemctl` و `systemd-analyze` باشد، هرچند برای آزمون باید SysV را هم بشناسی (بسیاری سیستم‌های production هنوز از آن استفاده می‌کنند یا لایه‌ی سازگاری دارند).
+هر قدم از این زنجیره، بخشی از Topic 202 (یا بخش‌های مرتبط دیگر) است. بیا هرکدام را عمیق‌تر ببینیم.
 
-## ۴) دستورات کامل
+### تفاوت بنیادین BIOS و UEFI
 
-### 202.1 — شخصی‌سازی startup
+**BIOS** (Basic Input/Output System) روش سنتی است: یک فریمور بسیار ساده که فقط اولین ۵۱۲ بایت دیسک بوت (به نام **MBR** — Master Boot Record) را می‌خواند و اجرا می‌کند. این ۵۱۲ بایت آنقدر کوچک است که فقط جای کافی برای یک «bootloader مرحله‌ی اول» بسیار ابتدایی دارد که کارش صرفاً بارگذاری مرحله‌ی بعدی bootloader واقعی (مثل GRUB) از جای دیگری روی دیسک است — به همین دلیل GRUB را به‌صورت «۲ یا ۳ مرحله‌ای» (stage 1, 1.5, 2) طراحی کرده‌اند.
+
+**UEFI** (Unified Extensible Firmware Interface) جانشین مدرن‌تر است: خودش یک محیط اجرایی کوچک است که می‌تواند مستقیماً فایل‌های اجرایی با فرمت `.efi` را از یک پارتیشن فت (FAT32) به نام **ESP** (EFI System Partition) بخواند و اجرا کند — دیگر نیازی به تریک ۵۱۲ بایتی MBR نیست. UEFI همچنین قابلیت‌های پیشرفته‌تری مثل **Secure Boot** (که فقط bootloaderهای دارای امضای دیجیتال معتبر را اجرا می‌کند — یک لایه‌ی امنیتی مهم در برابر rootkit های سطح بوت) را دارد.
+
+### تشبیه: تفاوت BIOS/UEFI مثل یک نامه‌ی کوتاه در برابر یک فهرست کامل
+
+BIOS مثل این است که کسی فقط یک تکه کاغذ کوچک به تو بدهد که رویش نوشته «برو فلان اتاق»، و در آن اتاق یک کاغذ دیگر پیدا کنی که می‌گوید «حالا برو فلان اتاق دیگر». UEFI مثل این است که از همان اول یک فهرست کامل و منظم از تمام گزینه‌های موجود به تو بدهند تا مستقیم انتخاب کنی.
+
+## ۱.۲) systemd: از init تا مدیر کامل سیستم
+
+**init** به‌طور تاریخی به اولین پردازه‌ای گفته می‌شد که کرنل بعد از بوت اجرا می‌کند (همیشه با PID 1). این پردازه مسئول راه‌اندازی همه‌ی سرویس‌های دیگر است. نسل‌های مختلفی از init وجود داشته:
+
+- **SysV init** — قدیمی‌ترین، مبتنی بر اسکریپت‌های شل ترتیبی در `/etc/init.d/` و مفهوم «runlevel» (سطح اجرا)
+- **Upstart** — تلاش اوبونتو برای مدرن‌سازی init (event-driven)، امروز کاملاً کنار گذاشته شده
+- **systemd** — استاندارد امروزی تقریباً در تمام توزیع‌های اصلی (از جمله Arch/Omarchy)، که فقط «init» نیست بلکه یک **مجموعه‌ی کامل مدیریت سیستم** است: مدیریت سرویس، لاگ (`journald`)، شبکه (`systemd-networkd`)، زمان (`timedated`)، و بسیاری دیگر.
+
+### مفهوم Target در برابر Runlevel
+
+در دنیای SysV، سیستم در یکی از هفت **runlevel** عددی (۰ تا ۶) قرار می‌گرفت — هرکدام یعنی «مجموعه‌ای مشخص از سرویس‌ها فعال باشند»:
+
+| Runlevel | معنا |
+|---|---|
+| 0 | Halt (خاموش کردن) |
+| 1 | Single-user mode (تعمیر) |
+| 2 | Multi-user بدون شبکه (در برخی توزیع‌ها) |
+| 3 | Multi-user با شبکه، بدون رابط گرافیکی |
+| 4 | استفاده‌نشده/سفارشی |
+| 5 | Multi-user با رابط گرافیکی |
+| 6 | Reboot |
+
+systemd این مفهوم عددی را با **target** جایگزین کرده — یک نام‌گذاری معنادارتر:
+
+| systemd Target | معادل Runlevel قدیمی |
+|---|---|
+| `poweroff.target` | 0 |
+| `rescue.target` | 1 |
+| `multi-user.target` | 3 |
+| `graphical.target` | 5 |
+| `reboot.target` | 6 |
+
+برای سازگاری با اسکریپت‌ها و عادت‌های قدیمی، systemd حتی symlink هایی برای دستورات قدیمی می‌سازد که در پس‌زمینه معادل جدید را صدا می‌زنند:
+```bash
+init 3        # در پس‌زمینه واقعاً یعنی: systemctl isolate multi-user.target
+telinit 3     # همین‌طور
+```
 
 ```bash
-systemctl list-units --type=target      # targetهای فعال (معادل runlevel)
-systemctl get-default                    # target پیش‌فرض بوت
-sudo systemctl set-default multi-user.target
-systemctl list-unit-files --type=service # همه سرویس‌ها و وضعیت enable/disable
-sudo systemctl enable sshd.service
-sudo systemctl disable sshd.service
-systemd-analyze blame                    # کدام سرویس بیشترین زمان بوت را گرفته
-systemd-analyze critical-chain           # زنجیره وابستگی که بوت را کند کرده
+systemctl list-units --type=target      # تمام targetهای فعال در حال حاضر
+systemctl get-default                    # target پیش‌فرض بوت (چه چیزی بعد از بوت فعال می‌شود)
+sudo systemctl set-default multi-user.target   # تغییر پیش‌فرض (مثلاً غیرفعال کردن محیط گرافیکی در بوت)
+systemctl isolate rescue.target           # سوییچ فوری به یک target دیگر، همین الان
 ```
-معادل‌های SysV (برای آزمون، حتی روی Arch که استفاده نمی‌شوند باید بشناسی‌شان):
-```bash
-chkconfig --list          # (Red Hat family)
-update-rc.d ssh defaults  # (Debian family)
-init 3   /  telinit 3     # تغییر runlevel
-```
-مسیرهای کلیدی systemd: `/usr/lib/systemd/system/` (فایل‌های واحد پیش‌فرض پکیج‌ها)، `/etc/systemd/system/` (override و سفارشی‌سازی محلی — این جایی‌ست که خودت باید تغییرات بدهی)، `/run/systemd/` (واحدهای موقت runtime).
 
-### 202.2 — بازیابی سیستم (Recovery)
+**«isolate» یعنی چه؟** وقتی به یک target «isolate» می‌کنی، systemd همه‌ی واحدهایی (units) که در آن target وابستگی مشخص نشده‌اند را **متوقف** می‌کند و فقط واحدهای مرتبط با target مقصد را نگه می‌دارد یا شروع می‌کند — درست مثل رفتن به یک runlevel جدید در دنیای قدیمی.
 
-> ⚠️ **هشدار جدی:** دستورات این بخش مستقیماً روی فرآیند بوت اثر می‌گذارند. قبل از تغییر GRUB، حتماً یک نسخه پشتیبان از `/boot/grub/grub.cfg` بگیر:
-> ```bash
-> sudo cp /boot/grub/grub.cfg /boot/grub/grub.cfg.bak
-> ```
+## ۱.۳) واحدهای systemd (Units) — عمیق‌تر از فقط سرویس
+
+خیلی‌ها فکر می‌کنند systemd فقط «سرویس» مدیریت می‌کند، اما در واقع مفهوم کلی‌تری به نام **Unit** دارد که انواع مختلفی می‌گیرد:
+
+- `.service` — یک برنامه/دیمون (مثل `sshd.service`)
+- `.socket` — یک سوکت شبکه یا Unix که می‌تواند سرویس مرتبطش را به‌صورت on-demand فعال کند (socket activation — یکی از ویژگی‌های هوشمند systemd: سرویس فقط وقتی واقعاً یک اتصال بیاید بالا می‌آید، نه از همان اول بوت)
+- `.mount` / `.automount` — معادل خط‌های `fstab`
+- `.timer` — معادل مدرن‌تر cron برای زمان‌بندی کارها
+- `.target` — گروه‌بندی منطقی از واحدهای دیگر (مثل یک پوشه‌ی سازمان‌دهی)
+- `.device` — بازتابی از یک دستگاه شناسایی‌شده توسط udev
+- `.path` — راه‌اندازی یک واحد بر اساس تغییر یک فایل/پوشه‌ی خاص
 
 ```bash
-sudo grub-install /dev/sda          # نصب GRUB روی MBR یک دیسک (BIOS)
-sudo grub-install --target=x86_64-efi --efi-directory=/boot/efi   # روی UEFI
-sudo grub-mkconfig -o /boot/grub/grub.cfg
-efibootmgr -v                       # لیست ورودی‌های بوت UEFI
+systemctl list-unit-files --type=service    # همه‌ی سرویس‌ها + وضعیت enabled/disabled/static
+systemctl list-units --type=service --state=running   # فقط سرویس‌های در حال اجرا الان
 ```
-حالت‌های بازیابی systemd:
-```bash
-systemctl rescue     # حالت تک‌کاربره با حداقل سرویس‌ها (شبیه runlevel 1)
-systemctl emergency  # حداقل‌ترین حالت ممکن، فقط شل روت، بدون mount کامل فایل‌سیستم‌ها
-```
-برای رسیدن به این حالت‌ها در لحظه بوت، در منوی GRUB روی خط کرنل، پارامتر زیر اضافه می‌شود:
-```
-systemd.unit=rescue.target
-```
-یا روش قدیمی‌تر (SysV):
-```
-single
-```
-بررسی و تعمیر فایل‌سیستم بعد از خاموشی ناگهانی:
-```bash
-sudo fsck /dev/sda1
-sudo mount -o remount,rw /
-```
-> ⚠️ هرگز `fsck` را روی یک فایل‌سیستم mount‌شده در حالت read-write اجرا نکن — همیشه یا unmount کن یا read-only mount کن.
 
-### 202.3 — بوت‌لودرهای جایگزین
+### سه مسیر مهم فایل‌های واحد — و چرا این تفکیک حیاتی‌ست
 
-```bash
-extlinux --install /boot/syslinux/     # نصب SYSLINUX روی یک پارتیشن
 ```
-ابزارهای مرتبط با PXE (بوت شبکه‌ای، بدون رسانه فیزیکی): `pxelinux.0`، فایل‌های پیکربندی در `pxelinux.cfg/`. برای ایزو بوت‌شونده: `isolinux.bin`، `isolinux.cfg`، `isohdpfx.bin`. این‌ها معمولاً فقط سطح آگاهی لازم دارند، نه پیکربندی عملی عمیق. **systemd-boot** و **U-Boot** هم فقط باید بشناسی که چه هستند: systemd-boot جایگزین سبک‌تر GRUB برای سیستم‌های UEFI (که خود Arch/Omarchy می‌تواند از آن استفاده کند)، و U-Boot بوت‌لودر رایج سیستم‌های embedded/ARM است.
-
-## ۵) نکات مهم آزمون LPIC
-
-- ✅ تفاوت `systemctl rescue` و `systemctl emergency` را دقیق بدان: rescue فایل‌سیستم‌ها را mount می‌کند، emergency نه.
-- ✅ محل صحیح override سرویس‌ها: همیشه در `/etc/systemd/system/`، هرگز مستقیم در `/usr/lib/systemd/system/` تغییر نده (پکیج‌ها آن را overwrite می‌کنند).
-- ✅ فرق ESP (EFI System Partition) در UEFI با MBR در BIOS را بشناس.
-- ✅ دستور `grub-install` برای BIOS نیاز به دیسک دارد (`/dev/sda`)، برای UEFI نیاز به مسیر ESP.
-- ✅ SYSLINUX خانواده کامل دارد: SYSLINUX (دیسک)، ISOLINUX (سی‌دی)، PXELINUX (شبکه) — هرکدام برای رسانه متفاوت.
-
-## ۶) تمرین عملی امن
-
-> ⚠️ **هشدار جدی:** تمرین‌های GRUB واقعی روی سیستم اصلی خطرناک است. این تمرین را در یک ماشین مجازی (مثل QEMU/VirtualBox) با یک نصب Arch/Omarchy تستی انجام بده، نه روی لپ‌تاپ اصلی.
-
-1. targetهای فعال و سرویس‌های کند بوت را ببین:
-```bash
-systemctl list-units --type=target
-systemd-analyze blame | head -10
+/usr/lib/systemd/system/    ← فایل‌های پیش‌فرض که با نصب پکیج می‌آیند (توسط پکیج منیجر مدیریت می‌شود)
+/etc/systemd/system/        ← override ها و واحدهای سفارشی محلی (اینجا محل کار توست)
+/run/systemd/system/        ← واحدهای موقت runtime (ساخته‌شده در حافظه، با ری‌بوت از بین می‌روند)
 ```
-2. یک override امن برای یک سرویس بسازید (بدون تغییر فایل اصلی):
+
+**چرا هرگز نباید مستقیم در `/usr/lib/systemd/system/` تغییر بدهی؟** چون این پوشه توسط پکیج منیجر (pacman) مدیریت می‌شود — دفعه‌ی بعد که آن پکیج آپدیت شود، فایلت **بی‌سروصدا overwrite می‌شود** و تغییراتت از بین می‌رود. راه درست:
+
 ```bash
 sudo systemctl edit sshd.service
 ```
-3. در ماشین مجازی تستی، وارد حالت rescue شوید و برگردید:
+این دستور یک فایل override کوچک در `/etc/systemd/system/sshd.service.d/override.conf` می‌سازد که فقط تغییرات تو را نگه می‌دارد، بدون دست زدن به فایل اصلی — و در آپدیت پکیج هم دست‌نخورده باقی می‌ماند.
+
+اگر بخواهی کل فایل را بازنویسی کنی (نه فقط override جزئی):
 ```bash
-sudo systemctl rescue
-# بعد از بررسی:
-systemctl default
+sudo systemctl edit --full sshd.service
 ```
-4. یک نسخه پشتیبان از grub.cfg بگیرید و پیکربندی مجدد کنید:
+این یک کپی کامل فایل اصلی را در `/etc/systemd/system/` می‌سازد که کاملاً جایگزین نسخه‌ی اصلی می‌شود.
+
+## ۱.۴) عیب‌یابی زمان بوت — کدام سرویس کند است؟
+
 ```bash
-sudo cp /boot/grub/grub.cfg /boot/grub/grub.cfg.bak
+systemd-analyze                        # زمان کل بوت، تفکیک‌شده به firmware + loader + kernel + userspace
+systemd-analyze blame                  # لیست همه‌ی سرویس‌ها، مرتب‌شده بر اساس زمانی که برای start شدن گرفته‌اند
+systemd-analyze critical-chain         # زنجیره‌ی وابستگی که مستقیماً روی طول کل زمان بوت اثر گذاشته
+systemd-analyze plot > boot.svg        # یک نمودار SVG بصری از کل فرآیند بوت (خیلی کاربردی برای تحلیل عمیق)
+```
+
+نکته‌ی مهم درباره‌ی `blame`: بالاترین عدد در این لیست همیشه به‌معنای «این سرویس مشکل اصلی است» نیست، چون `blame` فقط زمان start شدن **مستقل** هر سرویس را نشان می‌دهد، نه این‌که آیا آن سرویس روی مسیر بحرانی (critical path) بوت قرار دارد یا نه — برای فهم واقعی این‌که «چرا کل بوت این‌قدر طول کشید»، باید `critical-chain` را نگاه کنی، چون این یکی زنجیره‌ی وابستگی‌های واقعی را نشان می‌دهد.
+
+## ۱.۵) legacy SysV — چرا هنوز باید بلد باشی؟
+
+با این‌که Arch/Omarchy کاملاً systemd است، آزمون LPIC-2 هنوز فرض می‌کند ممکن است روی سیستم‌های قدیمی‌تر یا برخی توزیع‌های خاص با SysV یا لایه‌ی سازگاری آن روبرو شوی:
+
+```bash
+# Red Hat family
+chkconfig --list                  # لیست سرویس‌ها و وضعیتشان در هر runlevel
+chkconfig sshd on                  # فعال‌سازی برای بوت خودکار
+# Debian family
+update-rc.d ssh defaults           # افزودن symlink های شروع/توقف مناسب برای هر runlevel
+update-rc.d ssh remove             # حذف
+```
+مفهوم مهم SysV: اسکریپت‌های `/etc/init.d/` واقعی هستند، و برای هر runlevel، پوشه‌هایی مثل `/etc/rc3.d/` وجود دارند که پر از **symlink** به این اسکریپت‌ها هستند — با نام‌هایی مثل `S20sshd` (Start، اولویت ۲۰) یا `K80sshd` (Kill، اولویت ۸۰). عدد بعد از S/K ترتیب اجرا را مشخص می‌کند.
+
+## ۱.۶) نکات مهم آزمون برای 202.1
+
+- ✅ تفاوت دقیق BIOS/MBR (۵۱۲ بایت، bootloader چندمرحله‌ای) در برابر UEFI/ESP (فایل‌های `.efi` مستقیم از یک پارتیشن FAT) را عمیق بدان.
+- ✅ نگاشت کامل target ↔ runlevel را حفظ کن (خصوصاً 0, 1, 3, 5, 6).
+- ✅ هرگز فایل‌های `/usr/lib/systemd/system/` را مستقیم ویرایش نکن؛ همیشه `systemctl edit`.
+- ✅ تفاوت `systemctl edit` (override جزئی) و `systemctl edit --full` (جایگزینی کامل) را بدان.
+- ✅ `blame` زمان مستقل هر سرویس، `critical-chain` زنجیره‌ی وابستگی واقعی بوت را نشان می‌دهد.
+- ✅ الگوی نام‌گذاری SysV: `S<priority><service>` برای start، `K<priority><service>` برای kill.
+
+---
+
+# بخش دوم — 202.2: بازیابی سیستم (System Recovery)
+
+## ۲.۱) فلسفه‌ی این بخش: وقتی SSH نیست، فقط تو و کنسول هستید
+
+این سنگین‌ترین وزن (۴) کل Topic 202 را دارد، و دلیلش ساده است: وقتی یک سرور بوت نمی‌شود، **هیچ راه دوری برای دیباگ کردن آن نداری**. باید مستقیم پای سیستم (یا از طریق کنسول از‌راه‌دور مثل IPMI/iDRAC) بنشینی و مرحله‌به‌مرحله پیش بروی. برای همین این دانش را باید واقعاً **حفظ** کنی، نه این‌که فکر کنی «موقعش گوگل می‌کنم» — چون در آن لحظه اینترنت هم شاید در دسترس نباشد.
+
+## ۲.۲) نصب و بازسازی GRUB — عمیق
+
+### GRUB روی سیستم BIOS
+
+روی سیستم‌های BIOS، GRUB به‌صورت چندمرحله‌ای کار می‌کند:
+- **Stage 1** — همان ۴۴۶ بایت اول MBR (۵۱۲ بایت کل MBR است، ۶۴ بایت آخر برای جدول پارتیشن و امضا رزرو شده). فقط جای کافی برای اشاره به Stage بعدی دارد.
+- **Stage 1.5** (در GRUB2 به آن «core.img» می‌گویند) — در فضای خالی بین MBR و اولین پارتیشن نوشته می‌شود (این فضا را «embedding area» می‌نامند)؛ شامل درایورهای لازم برای خواندن فایل‌سیستم است.
+- **Stage 2** — روی خود فایل‌سیستم (`/boot/grub/`) قرار دارد و منوی کامل GRUB را بارگذاری می‌کند.
+
+```bash
+sudo grub-install /dev/sda
+```
+این دستور، GRUB را روی MBR دیسک `/dev/sda` نصب می‌کند (توجه: نام دیسک کامل، **نه** یک پارتیشن خاص مثل `/dev/sda1` — چون MBR مربوط به کل دیسک است).
+
+### GRUB روی سیستم UEFI
+
+```bash
+sudo grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
+```
+اینجا به‌جای نوشتن روی MBR، یک فایل `.efi` (مثلاً `grubx64.efi`) در پارتیشن ESP کپی می‌شود، و یک ورودی جدید در **NVRAM** فریمور UEFI ثبت می‌شود که به فریمور می‌گوید «این فایل را در بوت بعدی اجرا کن».
+
+```bash
+efibootmgr -v                    # لیست تمام ورودی‌های ثبت‌شده در NVRAM
+sudo efibootmgr -o 0001,0000      # تغییر ترتیب اولویت بوت
+sudo efibootmgr -b 0001 -B        # حذف یک ورودی خاص
+```
+
+### بازسازی فایل تنظیمات GRUB
+
+```bash
 sudo grub-mkconfig -o /boot/grub/grub.cfg
 ```
+این دستور فایل `grub.cfg` (که واقعاً منوی GRUB را کنترل می‌کند) را از نو می‌سازد — با اسکن کردن کرنل‌های نصب‌شده در `/boot/`، و اجرای اسکریپت‌های کمکی در `/etc/grub.d/` (که هرکدام بخشی از منو را می‌سازند — مثلاً `10_linux` ورودی‌های کرنل لینوکس را می‌سازد، `30_os-prober` سیستم‌عامل‌های دیگر روی دیسک مثل ویندوز را پیدا می‌کند).
 
-## ۷) خلاصه جدولی
+تنظیمات کلی GRUB (نه منو، بلکه رفتار کلی مثل timeout، رزولوشن) در فایل `/etc/default/grub` است:
+```conf
+GRUB_TIMEOUT=5
+GRUB_DEFAULT=0
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3"
+```
+بعد از ویرایش این فایل، **همیشه باید دوباره** `grub-mkconfig` را اجرا کنی، چون این فایل مستقیم خوانده نمی‌شود؛ فقط ورودی برای ساخت `grub.cfg` است.
 
-| مفهوم | ابزار/فایل |
-|---|---|
-| مدیریت سرویس‌ها | `systemctl enable/disable/start/stop` |
-| زمان‌بندی بوت | `systemd-analyze blame/critical-chain` |
-| override سرویس | `/etc/systemd/system/` |
-| نصب GRUB (BIOS) | `grub-install /dev/sdX` |
-| نصب GRUB (UEFI) | `grub-install --target=x86_64-efi` |
-| بازسازی کانفیگ GRUB | `grub-mkconfig -o /boot/grub/grub.cfg` |
-| حالت تعمیر | `systemctl rescue` / `emergency` |
-| بوت شبکه‌ای | PXELINUX, pxelinux.cfg/ |
-| بوت‌لودر سبک UEFI | systemd-boot |
+> ⚠️ **هشدار جدی:** همیشه قبل از هر تغییر روی GRUB یک نسخه‌ی پشتیبان بگیر:
+> ```bash
+> sudo cp /boot/grub/grub.cfg /boot/grub/grub.cfg.bak
+> ```
+> و اگر روی یک سرور از راه دور کار می‌کنی، **همیشه یک راه دوم دسترسی** (مثل کنسول سریال یا IPMI) آماده داشته باش قبل از دست‌کاری bootloader.
 
-## ۸) مایندمپ متنی
+## ۲.۳) حالت‌های بازیابی: Rescue در برابر Emergency
+
+اینجا یک تفاوت مفهومی بسیار مهم و رایج در سؤالات آزمون است.
+
+```bash
+systemctl rescue
+```
+سیستم را به `rescue.target` می‌برد: تمام فایل‌سیستم‌های معمولی **مونت می‌شوند** (طبق fstab)، شبکه معمولاً غیرفعال است، فقط یک شل root با حداقل سرویس‌های ضروری در دسترس است. این برای زمانی مناسب است که **فایل‌سیستم سالم است** ولی مثلاً یک سرویس یا پیکربندی خراب شده و می‌خواهی بدون مزاحمت بقیه‌ی سیستم آن را تعمیر کنی.
+
+```bash
+systemctl emergency
+```
+سیستم را به `emergency.target` می‌برد: این حداقلی‌ترین حالت ممکن — **حتی فایل‌سیستم‌های معمولی هم مونت نمی‌شوند** (فقط ریشه، آن‌هم اغلب read-only). این برای وقتی است که چیزی آنقدر اساسی خراب شده (مثلاً خود `fstab` خراب است و مونت خودکار باعث گیر کردن بوت می‌شود) که حتی نمی‌خواهی سیستم تلاش کند فایل‌سیستم‌ها را خودکار مونت کند.
+
+**چطور از داخل منوی GRUB به این حالت‌ها برسیم؟** روی خط کرنل (با زدن `e` در منوی GRUB برای ویرایش موقت)، این پارامتر را اضافه می‌کنی:
+```
+systemd.unit=rescue.target
+```
+یا برای emergency:
+```
+systemd.unit=emergency.target
+```
+روش قدیمی‌تر (SysV، هنوز در برخی سناریوهای آزمون می‌آید): اضافه کردن کلمه‌ی `single` به خط کرنل، که سیستم را به runlevel 1 (تک‌کاربره) می‌برد.
+
+## ۲.۴) تعمیر فایل‌سیستم بعد از خاموشی ناگهانی
+
+وقتی برق قطع می‌شود یا سیستم به‌طور ناگهانی کرش می‌کند، فایل‌سیستم ممکن است در وضعیت «کثیف» (dirty) بماند — یعنی برخی نوشتن‌ها کامل ثبت نشده‌اند. کرنل معمولاً خودش هنگام بوت این را تشخیص می‌دهد و `fsck` را خودکار اجرا می‌کند، اما گاهی خودت باید دستی وارد عمل شوی:
+
+```bash
+sudo fsck /dev/sda1
+sudo fsck -y /dev/sda1     # جواب "yes" خودکار به همه‌ی سؤالات تعمیر (برای اسکریپت/خودکارسازی)
+sudo fsck -f /dev/sda1      # اجبار به چک کامل حتی اگر فایل‌سیستم "clean" علامت خورده باشد
+```
+
+> ⚠️ **هشدار بسیار جدی:** هرگز `fsck` را روی یک فایل‌سیستم که به‌صورت **read-write مونت شده** اجرا نکن — این می‌تواند داده را به‌شدت خراب کند چون هم‌زمان که `fsck` ساختار دیسک را تغییر می‌دهد، سیستم هم ممکن است چیزی بنویسد. همیشه یا باید فایل‌سیستم **unmount** باشد، یا حداقل **remount read-only**:
+> ```bash
+> sudo mount -o remount,ro /
+> sudo fsck /dev/sda1
+> sudo mount -o remount,rw /
+> ```
+> برای فایل‌سیستم ریشه (که نمی‌توانی وقتی سیستم روشن است unmount کنی)، این تعمیر معمولاً باید از یک **Live USB** یا در حالت single-user انجام شود.
+
+## ۲.۵) نکات مهم آزمون برای 202.2
+
+- ✅ فرق دقیق `rescue.target` (فایل‌سیستم‌ها mount می‌شوند) و `emergency.target` (حداقلی‌ترین حالت، بدون mount خودکار) — پرتکرارترین سؤال این بخش.
+- ✅ `grub-install` روی BIOS به کل دیسک اشاره می‌کند (`/dev/sda`)، روی UEFI به مسیر ESP + target.
+- ✅ بعد از ویرایش `/etc/default/grub`، همیشه باید `grub-mkconfig` دوباره اجرا شود.
+- ✅ هرگز `fsck` روی فایل‌سیستم mount‌شده‌ی read-write اجرا نشود.
+- ✅ پارامتر بوت `systemd.unit=rescue.target` یا `emergency.target` برای ورود دستی از GRUB.
+
+---
+
+# بخش سوم — 202.3: بوت‌لودرهای جایگزین
+
+## ۳.۱) چرا اصلاً باید بوت‌لودر دیگری غیر از GRUB بشناسی؟
+
+GRUB امروز غالب است، اما در دنیای واقعی سناریوهای متفاوتی وجود دارد که بوت‌لودرهای دیگر مناسب‌ترند: سیستم‌های embedded با فضای بسیار محدود، بوت شبکه‌ای بدون هیچ رسانه‌ی فیزیکی، یا سیستم‌های UEFI-only که به سادگی GRUB نیاز ندارند.
+
+## ۳.۲) خانواده‌ی SYSLINUX
+
+SYSLINUX در واقع یک **خانواده** از بوت‌لودرهای سبک است، هرکدام برای یک نوع رسانه:
+
+- **SYSLINUX** — برای بوت از پارتیشن‌های FAT (معمولاً روی فلش USB)
+- **ISOLINUX** — برای بوت از سی‌دی/دی‌وی‌دی (فرمت ISO9660) — این دقیقاً همان چیزی است که بیشتر ایزوهای بوت‌شونده‌ی لینوکس از آن استفاده می‌کنند
+- **PXELINUX** — برای بوت شبکه‌ای (از طریق پروتکل PXE)
+- **EXTLINUX** — نسخه‌ای که مستقیم روی فایل‌سیستم‌های ext2/3/4، btrfs و غیره نصب می‌شود (بدون نیاز به FAT)
+
+```bash
+extlinux --install /boot/syslinux/
+```
+
+## ۳.۳) بوت شبکه‌ای با PXE — عمیق‌تر
+
+**PXE** (Preboot eXecution Environment) به یک کامپیوتر اجازه می‌دهد **بدون هیچ دیسک یا فلشی** از طریق شبکه بوت شود — این پایه‌ی راه‌اندازی خودکار صدها سرور در یک دیتاسنتر، یا آزمایشگاه‌های کامپیوتر مدرسه است. فرآیند به این شکل کار می‌کند:
+
+1. کارت شبکه (که فریمور PXE دارد) هنگام بوت یک درخواست **DHCP** می‌فرستد
+2. سرور DHCP علاوه‌بر IP معمولی، اطلاعات اضافه‌ای می‌دهد: آدرس یک سرور **TFTP** و نام یک فایل بوت‌لودر (مثلاً `pxelinux.0`)
+3. کلاینت این فایل را از طریق TFTP دانلود و اجرا می‌کند
+4. `pxelinux.0` سپس فایل تنظیماتش را از پوشه‌ی `pxelinux.cfg/` روی همان سرور TFTP می‌خواند (نام فایل معمولاً بر اساس آدرس MAC یا IP کلاینت انتخاب می‌شود)
+5. از آنجا، کرنل و initramfس مناسب دانلود و بوت می‌شوند
+
+```
+سرور DHCP  →  اطلاعات next-server (TFTP) + filename (pxelinux.0)
+سرور TFTP  →  pxelinux.0 + pxelinux.cfg/default + کرنل + initrd
+```
+
+## ۳.۴) بوت‌لودرهای ایزو: ISOLINUX دقیق‌تر
+
+وقتی یک ایزوی بوت‌شونده لینوکس می‌سازی (مثلاً یک لایو دیسک سفارشی)، این فایل‌ها درگیرند:
+- `isolinux.bin` — خود بوت‌لودر
+- `isolinux.cfg` — تنظیمات منو
+- `isohdpfx.bin` — یک «پیشوند هیبریدی» (hybrid MBR) که به همان ایزو اجازه می‌دهد هم از سی‌دی/دی‌وی‌دی **و هم** از فلش USB (به‌صورت raw، مثل با `dd`) بوت‌شونده باشد — این چیزی است که ابزارهایی مثل ابزار `xorriso` هنگام ساخت ایزوهای هیبریدی امروزی استفاده می‌کنند.
+
+## ۳.۵) systemd-boot — جایگزین سبک برای سیستم‌های UEFI-only
+
+اگر سیستمت **فقط** UEFI است (بدون نیاز به پشتیبانی BIOS legacy، بدون نیاز به بوت چند سیستم‌عامل پیچیده)، systemd خودش یک بوت‌لودر بسیار ساده و سبک به نام **systemd-boot** ارائه می‌دهد که مستقیم روی ESP نصب می‌شود و نیازی به فایل تنظیمات پیچیده‌ای مثل GRUB ندارد — هر ورودی منو صرفاً یک فایل کوچک متنی است. این گزینه‌ای است که برخی نصب‌های مدرن Arch/Omarchy از آن به‌جای GRUB استفاده می‌کنند:
+
+```bash
+sudo bootctl install       # نصب systemd-boot روی ESP
+sudo bootctl status         # بررسی وضعیت فعلی
+```
+فایل‌های ورودی منو در `/boot/loader/entries/*.conf` قرار می‌گیرند — هرکدام چیزی شبیه:
+```conf
+title   Arch Linux
+linux   /vmlinuz-linux
+initrd  /initramfs-linux.img
+options root=UUID=xxxx rw
+```
+
+## ۳.۶) U-Boot — دنیای سیستم‌های Embedded/ARM
+
+**U-Boot** (Universal Boot Loader) استاندارد بوت‌لودر در دنیای سیستم‌های embedded و بسیاری بردهای ARM (مثل Raspberry Pi تا حدی، بسیاری روترها، تلویزیون‌های هوشمند) است. برخلاف GRUB که برای PC های x86 طراحی شده، U-Boot بسیار قابل‌تنظیم‌تر برای انواع پردازنده‌های ARM/MIPS/RISC-V است و معمولاً از طریق یک کنسول سریال (نه صفحه‌نمایش معمولی) کنترل می‌شود. برای آزمون LPIC-2، فقط باید بدانی که **این یک بوت‌لودر رایج در دنیای غیر-PC است**، نه جزئیات پیکربندی عمیقش.
+
+## ۳.۷) نکات مهم آزمون برای 202.3
+
+- ✅ خانواده‌ی SYSLINUX را با کاربردشان جفت کن: SYSLINUX=FAT، ISOLINUX=CD/DVD، PXELINUX=شبکه، EXTLINUX=مستقیم روی ext/btrfs.
+- ✅ فرآیند PXE را مرحله‌به‌مرحله بدان: DHCP (اطلاعات TFTP) → TFTP (بوت‌لودر + کانفیگ + کرنل).
+- ✅ نقش `isohdpfx.bin` در ساخت ایزوهای هیبریدی بوت‌شونده هم از سی‌دی هم از USB.
+- ✅ systemd-boot را به‌عنوان جایگزین سبک GRUB برای سیستم‌های صرفاً UEFI بشناس.
+- ✅ U-Boot را فقط در حد «بوت‌لودر رایج ARM/embedded» بشناس.
+
+---
+
+## خلاصه‌ی جدولی نهایی کل Topic 202
+
+| زیرمبحث | مفهوم کلیدی | ابزار/فایل اصلی |
+|---|---|---|
+| 202.1 | زنجیره‌ی بوت کامل | Firmware → Bootloader → Kernel → initramfs → systemd |
+| 202.1 | BIOS/MBR vs UEFI/ESP | تفاوت بنیادین دو فریمور |
+| 202.1 | Target ↔ Runlevel | `systemctl get-default`, نگاشت 0/1/3/5/6 |
+| 202.1 | override امن سرویس | `systemctl edit` در `/etc/systemd/system/` |
+| 202.1 | عیب‌یابی زمان بوت | `systemd-analyze blame/critical-chain` |
+| 202.2 | نصب GRUB | `grub-install` (BIOS: دیسک کامل / UEFI: ESP) |
+| 202.2 | بازسازی کانفیگ | `grub-mkconfig`, `/etc/default/grub` |
+| 202.2 | حالت‌های تعمیر | `rescue.target` vs `emergency.target` |
+| 202.2 | تعمیر فایل‌سیستم | `fsck` (فقط روی unmounted/read-only) |
+| 202.3 | خانواده SYSLINUX | SYSLINUX/ISOLINUX/PXELINUX/EXTLINUX |
+| 202.3 | بوت شبکه‌ای | DHCP + TFTP |
+| 202.3 | جایگزین سبک UEFI | systemd-boot, `bootctl` |
+| 202.3 | بوت‌لودر embedded | U-Boot (آگاهی) |
+
+## مایندمپ متنی کامل
 
 ```
 Topic 202: System Startup
+│
 ├── 202.1 Customizing Startup
-│   ├── systemd targets ↔ SysV runlevels
-│   ├── systemctl enable/disable
-│   └── /etc/systemd/system/ (override)
+│   ├── زنجیره کامل بوت: Firmware→Bootloader→Kernel→initramfs→systemd
+│   ├── BIOS(MBR ۵۱۲B) vs UEFI(ESP + .efi + NVRAM)
+│   ├── systemd targets ↔ SysV runlevels (0,1,3,5,6)
+│   ├── Unit types: service/socket/mount/timer/target/device/path
+│   ├── /usr/lib/systemd/system (پکیج) vs /etc/systemd/system (override)
+│   ├── systemctl edit / edit --full
+│   ├── systemd-analyze: blame vs critical-chain
+│   └── Legacy SysV: chkconfig, update-rc.d, S/K priority
+│
 ├── 202.2 System Recovery
-│   ├── BIOS vs UEFI, ESP
-│   ├── grub-install, grub-mkconfig
-│   ├── rescue.target vs emergency.target
-│   └── fsck, mount remount
+│   ├── grub-install: BIOS(/dev/sda) vs UEFI(--target=x86_64-efi)
+│   ├── grub-mkconfig ← /etc/default/grub + /etc/grub.d/*
+│   ├── efibootmgr (NVRAM entries)
+│   ├── rescue.target (fs mounted) vs emergency.target (minimal)
+│   ├── GRUB boot param: systemd.unit=rescue/emergency.target
+│   └── fsck (هرگز روی rw-mounted!)
+│
 └── 202.3 Alternate Bootloaders
-    ├── SYSLINUX / ISOLINUX / PXELINUX
-    ├── PXE boot
-    └── systemd-boot, U-Boot (awareness)
+    ├── SYSLINUX family: SYSLINUX/ISOLINUX/PXELINUX/EXTLINUX
+    ├── PXE flow: DHCP→TFTP→kernel+initrd
+    ├── isohdpfx.bin (hybrid ISO)
+    ├── systemd-boot: bootctl, /boot/loader/entries/
+    └── U-Boot (ARM/embedded awareness)
 ```
