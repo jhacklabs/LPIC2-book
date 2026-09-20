@@ -1,170 +1,375 @@
 ---
-title: "Topic 205 — Networking Configuration"
+title: "Topic 205 — Networking Configuration (نسخه عمیق و کامل)"
 exam: LPIC-2 / 201-450
 weights: "205.1 (3) + 205.2 (4) + 205.3 (4)"
 os_target: "Arch Linux / Omarchy"
-tags: [lpic2, networking, systemd-networkd, netplan]
+tags: [lpic2, networking, systemd-networkd, dhcp, deep-dive]
 ---
 
-# Topic 205: Networking Configuration
+# Topic 205: Networking Configuration — راهنمای کامل و عمیق
 
-## ۱) مفهوم کلی
+---
 
-سه بخش:
-- **205.1** پایه‌های پیکربندی شبکه پایه (رابط‌ها، مسیریابی)
-- **205.2** عیب‌یابی مشکلات شبکه
-- **205.3** پیکربندی خودکار آدرس شبکه (DHCP client/server)
+# بخش اول — 205.1: پایه‌های پیکربندی شبکه
 
-## ۲) چرا این مبحث مهم است؟
+## ۱.۱) مدل لایه‌ای شبکه — چارچوبی که همه‌چیز دیگر رویش سوار است
 
-هر سرویسی که می‌سازی — از DNS تا ایمیل تا فایل‌شیرینگ (که همه در Topicهای بعدی می‌آیند) — روی یک شبکه‌ی درست‌پیکربندی‌شده سوار است. اگر مسیریابی اشتباه باشد یا DNS جواب ندهد، هیچ سرویس دیگری هم کار نمی‌کند. برای امنیت، فهم عمیق ابزارهای عیب‌یابی شبکه (`tcpdump`, `ss`) دقیقاً همان مهارت‌هایی هستند که در تحلیل ترافیک مشکوک یا شناسایی نفوذ استفاده می‌شوند.
+قبل از دستورها، باید مدل ذهنی درستی از شبکه داشته باشی. مدل OSI (که دانشگاهی‌تر است) و مدل TCP/IP (که عملی‌تر و رایج‌تر در دنیای لینوکس است) هر دو ارتباطات شبکه را به **لایه‌ها** تقسیم می‌کنند:
 
-## ۳) مثال‌های واقعی + روی سیستم خودم
+```
+لایه‌ی کاربرد (Application)   ← HTTP, DNS, SSH, SMTP
+لایه‌ی انتقال (Transport)     ← TCP, UDP  (پورت‌ها اینجا تعریف می‌شوند)
+لایه‌ی شبکه (Network/Internet) ← IP, ICMP  (آدرس IP و مسیریابی اینجاست)
+لایه‌ی پیوند داده (Data Link)  ← Ethernet, MAC Address, ARP
+لایه‌ی فیزیکی (Physical)       ← کابل، سیگنال الکتریکی/نوری/رادیویی
+```
 
-**واقعی:** یک اپلیکیشن ناگهان کند می‌شود؛ با `tcpdump` مشخص می‌شود سرور دارد بسته‌های DNS را چند بار retransmit می‌کند چون DNS server اصلی جواب نمی‌دهد — مشکل نه از کد، از شبکه بوده.
+هر ابزاری که در این Topic می‌بینی، دقیقاً روی یکی از این لایه‌ها کار می‌کند: `ping` روی ICMP (لایه‌ی شبکه) کار می‌کند، `ss`/`netstat` روی TCP/UDP (لایه‌ی انتقال)، `ip link` روی لایه‌ی پیوند داده. فهم این‌که هر ابزار «کجای پشته» کار می‌کند به تو کمک می‌کند بفهمی چرا یک مشکل خاص را با ابزار خاصی عیب‌یابی می‌کنند.
 
-**روی Omarchy:** Arch معمولاً از **systemd-networkd** یا **NetworkManager** استفاده می‌کند (نه فایل‌های سنتی `/etc/network/interfaces` دبیان‌محور). چون از Omarchy استفاده می‌کنی که پیش‌فرض NetworkManager دارد، تمرکز عملی روی `nmcli` و `ip` است، اما آزمون فایل‌های سنتی‌تر را هم می‌پرسد.
+## ۱.۲) `ip` — ابزار مدرن یکپارچه (جانشین کل خانواده‌ی net-tools)
 
-## ۴) دستورات کامل
+سال‌ها دستورهای شبکه در لینوکس پراکنده بودند: `ifconfig` برای اینترفیس، `route` برای مسیریابی، `arp` برای جدول ARP — هرکدام یک ابزار جدا با سینتکس متفاوت (این خانواده به نام `net-tools` شناخته می‌شود و امروز **deprecated** اعلام شده). ابزار `ip` (از پکیج `iproute2`) همه‌ی این‌ها را در یک رابط یکپارچه جمع کرده است.
 
-### 205.1 — پیکربندی پایه
+### آدرس‌دهی و اینترفیس‌ها
 
 ```bash
-ip addr show                     # آدرس‌های IP رابط‌ها
-ip link show                     # وضعیت رابط‌ها (up/down)
-sudo ip addr add 192.168.1.50/24 dev eth0
-sudo ip link set eth0 up
-sudo ip route add default via 192.168.1.1
-ip route show                    # جدول مسیریابی
-ip -6 addr show                  # آدرس‌های IPv6
+ip addr show                      # یا خلاصه: ip a
+ip addr show dev eth0               # فقط یک اینترفیس خاص
+sudo ip addr add 192.168.1.50/24 dev eth0     # افزودن یک آدرس (موقت، تا ری‌بوت)
+sudo ip addr del 192.168.1.50/24 dev eth0      # حذف
 ```
-پیکربندی دائمی روی Arch/Omarchy با NetworkManager:
+نکته‌ی مهم: `ip addr add` **موقت** است — دقیقاً مثل `sysctl -w` که در Topic 201 دیدیم، این تغییرات فقط تا بوت بعدی زنده می‌مانند مگر این‌که در فایل تنظیمات دائمی (که بعداً می‌بینیم) ذخیره شوند.
+
 ```bash
-nmcli device status
-nmcli connection show
-sudo nmcli connection add type ethernet ifname eth0 ip4 192.168.1.50/24 gw4 192.168.1.1
-sudo nmcli connection up eth0
+ip link show                       # وضعیت لایه‌ی پیوند داده (up/down, MAC address, MTU)
+sudo ip link set eth0 up            # روشن کردن اینترفیس
+sudo ip link set eth0 down           # خاموش کردن
+sudo ip link set eth0 mtu 9000        # تغییر MTU (مثلاً برای Jumbo Frames در شبکه‌های سرور)
+sudo ip link set eth0 address 00:11:22:33:44:55   # تغییر MAC آدرس (spoofing، کاربرد قانونی: تست، یا کاربرد امنیتی: مخفی کردن هویت سخت‌افزاری)
 ```
-با systemd-networkd (روش دیگر رایج روی Arch):
+
+### مسیریابی
+
+```bash
+ip route show                       # یا: ip r
+sudo ip route add default via 192.168.1.1        # تنظیم gateway پیش‌فرض
+sudo ip route add 10.0.0.0/24 via 192.168.1.254 dev eth0    # یک مسیر اختصاصی برای یک زیرشبکه‌ی خاص
+sudo ip route del 10.0.0.0/24
 ```
-# فایل /etc/systemd/network/20-wired.network
+
+### آمار
+
+```bash
+ip -s link show eth0
+```
+پرچم `-s` (statistics) آمار بسته‌های ارسالی/دریافتی، خطاها، و بسته‌های حذف‌شده (dropped) هر اینترفیس را نشان می‌دهد — اولین جایی که برای تشخیص مشکلات فیزیکی/کارت شبکه باید نگاه کنی.
+
+## ۱.۳) پیکربندی پایدار: از فایل‌های سنتی تا systemd-networkd
+
+اینجا یکی از نکاتی است که در دنیای واقعی (و در آزمون) خیلی گیج‌کننده می‌شود، چون **هر خانواده‌ی توزیع روش خودش را دارد**. باید هر سه را بشناسی.
+
+### روش Debian-family (سنتی): `/etc/network/interfaces`
+
+```conf
+auto eth0
+iface eth0 inet static
+    address 192.168.1.50
+    netmask 255.255.255.0
+    gateway 192.168.1.1
+    dns-nameservers 1.1.1.1 8.8.8.8
+```
+`auto eth0` یعنی این اینترفیس هنگام بوت خودکار فعال شود. `iface eth0 inet static` یعنی این اینترفیس با پروتکل IPv4 (`inet`) و تنظیمات دستی (`static`، در برابر `dhcp`) پیکربندی می‌شود.
+
+### روش Red Hat-family (سنتی): `ifcfg-*`
+
+```conf
+# /etc/sysconfig/network-scripts/ifcfg-eth0
+DEVICE=eth0
+BOOTPROTO=static
+IPADDR=192.168.1.50
+NETMASK=255.255.255.0
+GATEWAY=192.168.1.1
+ONBOOT=yes
+```
+
+### روش مدرن: systemd-networkd (رایج در Arch/Omarchy minimal)
+
+```ini
+# /etc/systemd/network/20-wired.network
 [Match]
 Name=eth0
+
 [Network]
 Address=192.168.1.50/24
 Gateway=192.168.1.1
+DNS=1.1.1.1
+DNS=8.8.8.8
 ```
+بخش `[Match]` مشخص می‌کند این تنظیمات برای کدام اینترفیس اعمال شود (می‌تواند بر اساس نام، MAC، یا حتی نوع سخت‌افزار باشد — انعطاف‌پذیرتر از روش‌های قدیمی). بخش `[Network]` تنظیمات واقعی است.
+
 ```bash
 sudo systemctl enable --now systemd-networkd
+sudo systemctl enable --now systemd-resolved     # مدیریت DNS، معمولاً همراه networkd
+networkctl status                                  # وضعیت خلاصه‌ی همه‌ی اینترفیس‌ها
+networkctl status eth0
+resolvectl status                                   # وضعیت DNS فعلی هر اینترفیس
 ```
-فایل سنتی‌تر (LPIC اغلب می‌پرسد، هرچند روی Arch وجود ندارد): `/etc/network/interfaces` (Debian) یا `/etc/sysconfig/network-scripts/ifcfg-eth0` (Red Hat).
 
-### 205.2 — عیب‌یابی شبکه
+## ۱.۴) نام‌گذاری پایدار اینترفیس‌ها — چرا دیگر `eth0` نیست؟
+
+اگر روی یک سیستم مدرن `ip addr` بزنی، احتمالاً به‌جای `eth0` چیزی مثل `enp3s0` یا `wlp2s0` می‌بینی. این تغییر تصادفی نیست:
+
+**مشکل قدیمی:** نام‌گذاری `eth0`, `eth1`, ... بر اساس **ترتیب شناسایی** توسط کرنل بود — دقیقاً همان مشکلی که در Topic 203 برای دیسک‌ها (`/dev/sda` در برابر UUID) دیدیم. اگر یک سرور دو کارت شبکه داشت، هیچ تضمینی نبود که کدام کارت همیشه `eth0` شود — این ترتیب می‌توانست بین بوت‌ها عوض شود (خصوصاً بعد از آپدیت درایور یا کرنل)، که باعث می‌شد قوانین فایروال یا تنظیمات اشتباه به کارت اشتباه اعمال شوند.
+
+**راه‌حل: Predictable Network Interface Names.** systemd/udev امروز نامی می‌سازد که بر اساس **موقعیت فیزیکی واقعی** سخت‌افزار (نه ترتیب شناسایی) است:
+- `enp3s0` = **e**thernet, **p**ci bus 3, **s**lot 0
+- `wlp2s0` = **w**ireless **l**an, **p**ci bus 2, **s**lot 0
+- `eno1` = ethernet، شماره‌ی onboard (روی مادربرد، نه یک کارت جدا) شماره‌ی ۱
+
+چون این نام‌ها بر اساس موقعیت فیزیکی واقعی سخت‌افزار روی مادربرد هستند، **هرگز** بین بوت‌ها تغییر نمی‌کنند (مگر واقعاً کارت را جابه‌جا کنی).
+
+```bash
+udevadm test-builtin net_id /sys/class/net/enp3s0
+```
+این دستور به تو نشان می‌دهد udev دقیقاً بر اساس چه اطلاعاتی این نام را ساخته است.
+
+## ۱.۵) نکات مهم آزمون برای 205.1
+
+- ✅ `ip` جانشین کامل خانواده‌ی `net-tools` (`ifconfig`, `route`, `arp`) است — ابزارهای قدیمی deprecated هستند اما هنوز در سؤالات می‌آیند.
+- ✅ تغییرات با `ip addr add`/`ip route add` **موقت** هستند؛ برای دائمی باید در فایل‌های پیکربندی مناسب توزیع نوشته شوند.
+- ✅ سه روش پیکربندی پایدار را جفت کن: `/etc/network/interfaces` (Debian)، `ifcfg-*` (Red Hat)، `.network` (systemd-networkd).
+- ✅ منطق نام‌گذاری پایدار اینترفیس‌ها را بفهم: بر اساس موقعیت فیزیکی، نه ترتیب شناسایی.
+
+---
+
+# بخش دوم — 205.2: عیب‌یابی شبکه
+
+## ۲.۱) رویکرد سیستماتیک عیب‌یابی — از پایین به بالا در پشته
+
+وقتی شبکه کار نمی‌کند، بهترین روش این است که از **پایین‌ترین لایه‌ی ممکن** شروع کنی و بالا بروی — چون اگر لایه‌ی پایین‌تر خراب باشد، تست لایه‌ی بالاتر بی‌معنی است.
+
+```
+۱. آیا کابل/اینترفیس فیزیکی بالاست؟          → ip link show
+۲. آیا IP گرفته‌ام؟                            → ip addr show
+۳. آیا می‌توانم به gateway محلی برسم؟          → ping <gateway>
+۴. آیا می‌توانم به یک IP خارجی برسم؟           → ping 8.8.8.8
+۵. آیا DNS کار می‌کند؟                         → dig example.com
+۶. آیا پورت سرویس مقصد باز است؟                → پورت خاص با nc/telnet یا tcpdump
+```
+این ترتیب دقیقاً همان چیزی است که سؤالات سناریومحور آزمون از تو انتظار دارند: تشخیص این‌که «مشکل در کدام قدم است».
+
+## ۲.۲) ابزارهای تست دسترسی
 
 ```bash
 ping -c 4 8.8.8.8
-traceroute 8.8.8.8
-mtr 8.8.8.8               # ترکیب ping + traceroute به‌صورت زنده
-ip neigh show              # جدول ARP
-sudo tcpdump -i eth0 -n port 53      # ضبط ترافیک DNS
-sudo tcpdump -i eth0 -w capture.pcap  # ذخیره برای تحلیل بعدی (مثلاً در Wireshark)
-dig example.com
-dig +trace example.com     # مسیر کامل resolve از روت‌سرورها
-host example.com
-nslookup example.com
-ss -tulnp                  # پورت‌های باز و پردازه‌ی صاحب هر پورت
 ```
-> ⚠️ **نکته امنیتی:** `tcpdump` می‌تواند ترافیک رمزنگاری‌نشده (مثل HTTP، Telnet، FTP) را کامل بخواند، شامل پسورد؛ فقط روی شبکه‌ای استفاده کن که مجاز به مانیتور آن هستی.
+`ping` پیام‌های ICMP Echo Request می‌فرستد و منتظر ICMP Echo Reply می‌ماند. `-c 4` یعنی فقط ۴ بار بفرست و متوقف شو (بدون این پرچم، `ping` تا ابد ادامه می‌دهد). اگر پاسخ نگیری، ممکن است شبکه خراب باشد **یا** فقط ICMP توسط یک فایروال بلاک شده باشد (این یک تله‌ی رایج آزمون است — «ping جواب نداد» به معنای «شبکه خراب است» نیست).
 
-### 205.3 — پیکربندی خودکار آدرس (DHCP)
-
-سمت کلاینت:
 ```bash
-sudo dhclient eth0          # درخواست دستی IP از DHCP
-sudo dhclient -r eth0       # آزادسازی IP فعلی
+traceroute 8.8.8.8
 ```
-سمت سرور (dhcpd — نادر روی لپ‌تاپ شخصی، رایج روی روترها/سرورها):
+مسیر گام‌به‌گام بسته تا مقصد را نشان می‌دهد، با استفاده از یک ترفند هوشمندانه: بسته‌هایی با مقدار **TTL** (Time To Live) به‌ترتیب افزایشی (۱، ۲، ۳، ...) می‌فرستد. هر روتر که TTL به صفر می‌رسد، بسته را دور می‌ریزد و یک پیام ICMP «Time Exceeded» برمی‌گرداند — این به `traceroute` اجازه می‌دهد آدرس هر «hop» (پرش) را کشف کند.
+
+```bash
+mtr 8.8.8.8
+```
+ترکیب زنده و پیوسته‌ی `ping` + `traceroute` — بسیار کاربردی‌تر برای تشخیص «کدام hop خاص است که packet loss یا latency دارد»، چون به‌جای یک اسنپ‌شات تکی، پیوسته آمار جمع می‌کند.
+
+## ۲.۳) DNS Troubleshooting — عمیق
+
+```bash
+dig example.com
+```
+خروجی `dig` بخش‌های مختلفی دارد که باید بلد باشی بخوانی:
+- **QUESTION SECTION** — چه چیزی پرسیدی
+- **ANSWER SECTION** — پاسخ واقعی (IP آدرس یا رکورد دیگر)
+- **AUTHORITY SECTION** — کدام سرور DNS مرجع (authoritative) برای این پاسخ بوده
+- **پایین صفحه** — از کدام سرور DNS و در چند میلی‌ثانیه پاسخ آمده
+
+```bash
+dig +short example.com          # فقط جواب خام، بدون بخش‌های اضافی
+dig example.com MX               # نوع رکورد خاص (MX برای ایمیل، NS برای name server، TXT، AAAA برای IPv6)
+dig +trace example.com           # کل مسیر resolve را از root serverها نشان بده (بسیار آموزنده برای فهم عمیق DNS)
+dig @8.8.8.8 example.com          # از یک DNS سرور مشخص بپرس (نه سرور پیش‌فرض سیستم) — برای تشخیص این‌که آیا مشکل از DNS سرور خودت است یا از دامنه
+```
+
+```bash
+host example.com        # نسخه‌ی خلاصه‌تر و ساده‌تر dig
+nslookup example.com     # ابزار قدیمی‌تر، هنوز رایج، اما رسماً "deprecated" اعلام شده به نفع dig
+```
+
+## ۲.۴) بررسی پورت‌ها و اتصالات فعال
+
+```bash
+ss -tulnp
+```
+این یکی از پرکاربردترین دستورهای عیب‌یابی کل دوره است. بیایید هر پرچم را باز کنیم:
+- `-t` — نمایش اتصالات TCP
+- `-u` — نمایش اتصالات UDP
+- `-l` — فقط سوکت‌های listening (منتظر اتصال، نه اتصالات فعال established)
+- `-n` — نمایش عددی (پورت/IP خام، بدون تبدیل به نام سرویس/host — سریع‌تر و دقیق‌تر)
+- `-p` — نمایش نام و PID پردازه‌ای که مالک هر سوکت است (نیاز به `sudo` برای دیدن پردازه‌های سایر کاربران)
+
+`ss` جانشین مدرن `netstat` است (که هم مثل `ifconfig` امروز deprecated محسوب می‌شود، اما در متن‌های قدیمی‌تر و برخی سؤالات هنوز دیده می‌شود).
+
+## ۲.۵) ضبط و تحلیل ترافیک — لایه‌ی عمیق‌تر
+
+گاهی `ping`/`dig`/`ss` کافی نیستند و باید واقعاً ببینی **چه بایت‌هایی** روی سیم رد و بدل می‌شوند.
+
+```bash
+sudo tcpdump -i eth0
+```
+بدون فیلتر، `tcpdump` هر بسته‌ای که از اینترفیس مشخص‌شده عبور کند را نشان می‌دهد — که می‌تواند خیلی سریع سیل عظیمی از خروجی شود. فیلترها (که از یک زبان به نام BPF - Berkeley Packet Filter می‌آیند) به تو اجازه می‌دهند دقیق‌تر باشی:
+
+```bash
+sudo tcpdump -i eth0 -n port 80              # فقط ترافیک پورت ۸۰ (HTTP)
+sudo tcpdump -i eth0 -n host 192.168.1.100    # فقط ترافیک مرتبط با یک IP خاص
+sudo tcpdump -i eth0 -n 'tcp[tcpflags] & tcp-syn != 0'   # فقط بسته‌های SYN (شروع اتصال TCP)
+sudo tcpdump -i any -w capture.pcap             # ذخیره در فایل به‌جای نمایش زنده، برای تحلیل بعدی
+sudo tcpdump -r capture.pcap                     # خواندن یک فایل ضبط‌شده‌ی قبلی
+```
+
+> ⚠️ **هشدار امنیتی و اخلاقی جدی:** `tcpdump` و ابزارهای مشابه (Wireshark) توانایی خواندن **محتوای خام** ترافیک شبکه را دارند — اگر ترافیک رمزنگاری‌نشده باشد (مثل HTTP معمولی، نه HTTPS)، حتی می‌توانند رمزهای عبور و داده‌های حساس دیگران را نشان دهند. ضبط ترافیک شبکه‌ای که مالکش نیستی یا اجازه‌ی صریح نداری، در بسیاری کشورها (از جمله تحت قوانین جرایم رایانه‌ای) **غیرقانونی** است. این ابزارها را فقط روی شبکه/دستگاه‌های خودت، یا در محیط‌های آزمایشگاهی قانونی (مثل TryHackMe/HackTheBox) استفاده کن.
+
+## ۲.۶) نکات مهم آزمون برای 205.2
+
+- ✅ ترتیب سیستماتیک عیب‌یابی: لینک فیزیکی → IP → gateway محلی → دسترسی خارجی → DNS → پورت سرویس.
+- ✅ عدم پاسخ `ping` لزوماً یعنی شبکه خراب است — ممکن است فقط ICMP بلاک شده باشد.
+- ✅ `traceroute` از مکانیزم TTL افزایشی استفاده می‌کند.
+- ✅ `dig +trace` مسیر کامل resolve از root serverها را نشان می‌دهد — ابزار قدرتمند تشخیص مشکلات DNS پیچیده.
+- ✅ پرچم‌های `ss -tulnp` را دقیق از هم تفکیک کن.
+- ✅ ملاحظات قانونی/اخلاقی ضبط ترافیک شبکه را جدی بگیر.
+
+---
+
+# بخش سوم — 205.3: پیکربندی سرور DHCP
+
+## ۳.۱) چرا DHCP اصلاً لازم است؟
+
+بدون DHCP، هر دستگاهی که به یک شبکه وصل می‌شود باید **دستی** پیکربندی شود: IP، ساب‌نت ماسک، gateway، DNS. در یک شبکه‌ی خانگی با ۵ دستگاه شاید قابل‌مدیریت باشد، اما در یک سازمان با هزاران دستگاه (که هرکدام هر روز ممکن است وصل/قطع شوند — لپ‌تاپ، موبایل، پرینتر)، این کار دستی عملاً غیرممکن است.
+
+**DHCP** (Dynamic Host Configuration Protocol) این را خودکار می‌کند: یک سرور مرکزی، وقتی یک دستگاه جدید به شبکه وصل می‌شود، خودکار یک آدرس IP و تمام تنظیمات لازم را به آن می‌دهد.
+
+## ۳.۲) فرآیند DORA — چهار مرحله‌ی دقیق دریافت IP
+
+این دقیقاً چیزی است که پشت صحنه هنگام «گرفتن IP» اتفاق می‌افتد — و سؤال کلاسیک بسیاری از دوره‌های شبکه است:
+
+```
+کلاینت                                    سرور DHCP
+   │                                            │
+   │──── (1) DHCPDISCOVER (Broadcast) ────────>│   "کسی سرور DHCP داره؟"
+   │                                            │
+   │<─── (2) DHCPOFFER ─────────────────────────│   "بله، این IP رو می‌تونم بهت بدم"
+   │                                            │
+   │──── (3) DHCPREQUEST (Broadcast) ─────────>│   "باشه، همین IP رو می‌خوام" (broadcast چون ممکنه چند سرور DHCP offer داده باشند)
+   │                                            │
+   │<─── (4) DHCPACK ────────────────────────────│   "تأیید شد، این IP مال توئه، به مدت X ثانیه"
+```
+
+این مخفف **DORA** (Discover, Offer, Request, Acknowledge) نامیده می‌شود. نکته‌ی جالب: چرا مرحله‌ی سوم (Request) هم به‌صورت broadcast است، نه مستقیم به همان سرور که Offer داده؟ چون ممکن است **چند** سرور DHCP روی همان شبکه Offer داده باشند (که در شبکه‌های بزرگ برای redundancy رایج است)؛ broadcast کردن Request به همه اطلاع می‌دهد که کلاینت کدام Offer را قبول کرده، تا بقیه‌ی سرورها IP هایی که Offer کرده بودند را دوباره آزاد کنند.
+
+## ۳.۳) پیکربندی سرور DHCP — عمیق
+
 ```bash
 sudo pacman -S dhcp
 ```
-فایل تنظیمات: `/etc/dhcpd.conf`
-```
+فایل تنظیمات اصلی: `/etc/dhcpd.conf`
+
+```conf
 subnet 192.168.1.0 netmask 255.255.255.0 {
-  range 192.168.1.100 192.168.1.200;
-  option routers 192.168.1.1;
-  option domain-name-servers 8.8.8.8;
+    range 192.168.1.100 192.168.1.200;
+    option routers 192.168.1.1;
+    option domain-name-servers 1.1.1.1, 8.8.8.8;
+    option domain-name "example.local";
+    default-lease-time 600;
+    max-lease-time 7200;
+
+    host server1 {
+        hardware ethernet 00:11:22:33:44:55;
+        fixed-address 192.168.1.10;
+    }
 }
 ```
+
+بیایید هر پارامتر را عمیق باز کنیم:
+
+- **`subnet ... netmask ...`** — بلوک اصلی که مشخص می‌کند این تنظیمات برای کدام زیرشبکه اعمال می‌شود
+- **`range`** — محدوده‌ی آدرس‌هایی که سرور می‌تواند به‌صورت **پویا** (dynamic) به کلاینت‌ها اختصاص دهد
+- **`option routers`** — آدرس gateway پیش‌فرض که به کلاینت‌ها اعلام می‌شود
+- **`option domain-name-servers`** — سرورهای DNS
+- **`default-lease-time`** — مدت زمان (به ثانیه) که یک IP بدون تمدید معتبر است، اگر کلاینت درخواست مدت خاصی نکرده باشد
+- **`max-lease-time`** — حداکثر مدتی که حتی اگر کلاینت درخواست مدت طولانی‌تر کند، سرور اجازه می‌دهد
+
+### DHCP Reservation — IP ثابت بدون پیکربندی دستی روی کلاینت
+
+بلوک `host server1 { hardware ethernet ...; fixed-address ...; }` یک مفهوم بسیار مهم به نام **DHCP Reservation** (یا Static DHCP Mapping) را نشان می‌دهد: به‌جای این‌که یک دستگاه را دستی با IP ثابت پیکربندی کنی (که یعنی اگر آن دستگاه را عوض کنی، باید دوباره دستی تنظیم کنی)، به سرور DHCP می‌گویی: «هر دستگاهی که این آدرس MAC خاص را دارد، همیشه همین IP مشخص را بگیر» — کلاینت همچنان از DHCP استفاده می‌کند (ساده و خودکار)، اما همیشه یک IP قابل‌پیش‌بینی و ثابت دریافت می‌کند. این ترکیب بهترین دو دنیا (سادگی DHCP + ثبات IP دستی) است و در دنیای واقعی برای پرینترها، سرورهای داخلی، و دستگاه‌های شبکه‌ای بسیار رایج است.
+
 ```bash
 sudo systemctl enable --now dhcpd4
-journalctl -u dhcpd4 -f       # مانیتور زنده لاگ سرویس DHCP
+sudo dhcpd -t -cf /etc/dhcpd.conf
 ```
-مفاهیم کلیدی DHCP: **DORA** (Discover → Offer → Request → Acknowledge) — چهار مرحله‌ای که یک کلاینت برای گرفتن IP طی می‌کند. **Lease time** — مدت اعتبار یک IP اختصاص‌داده‌شده.
+پرچم `-t` (test) به‌همراه `-cf` (config file) به تو اجازه می‌دهد **قبل از فعال‌سازی واقعی سرویس**، صحت syntax فایل تنظیمات را بررسی کنی — یک اشتباه تایپی ساده در این فایل می‌تواند کل سرویس DHCP شبکه را از کار بیندازد (و اگر این تنها سرور DHCP شبکه باشد، یعنی هیچ دستگاه جدیدی نمی‌تواند IP بگیرد)، پس این تست همیشه قبل از reload باید انجام شود.
 
-## ۵) نکات مهم آزمون LPIC
-
-- ✅ فرآیند DORA را دقیق حفظ کن — سؤال کلاسیک است.
-- ✅ تفاوت `dig` (جزئیات کامل DNS، ابزار مدرن) و `nslookup`/`host` (خروجی ساده‌تر، قدیمی‌تر ولی هنوز رایج) را بدان.
-- ✅ `ip` جایگزین مدرن `ifconfig`/`route` است؛ آزمون هر دو نسل ابزار را می‌پرسد.
-- ✅ فایل‌های پیکربندی سنتی توزیع‌محور را حتی روی Arch باید بشناسی (چون آزمون توزیع‌محور نیست): `/etc/network/interfaces`, `/etc/sysconfig/network`.
-- ✅ `tcpdump` فیلترهای BPF را بشناس: `port`, `host`, `net`, `and`/`or`.
-
-## ۶) تمرین عملی امن
-
-1. وضعیت فعلی شبکه‌ات را ببین:
 ```bash
-ip addr show
-ip route show
-nmcli device status
+cat /var/lib/dhcp/dhcpd.leases
 ```
-2. یک رابط شبکه مجازی بی‌خطر بساز (dummy interface، تأثیری روی شبکه واقعی ندارد):
+این فایل تمام «اجاره»های (leases) فعلاً صادرشده را نگه می‌دارد — چه IP به کدام MAC، از چه زمانی، تا چه زمانی معتبر است. این فایل برای عیب‌یابی («چرا این دستگاه IP نگرفت؟ آیا اصلاً درخواست داده؟») بسیار مفید است.
+
+## ۳.۴) سمت کلاینت
+
 ```bash
-sudo ip link add dummy0 type dummy
-sudo ip addr add 10.10.10.1/24 dev dummy0
-sudo ip link set dummy0 up
-ip addr show dummy0
-sudo ip link delete dummy0
-```
-3. ترافیک DNS خودت را ۱۰ ثانیه ضبط کن (فقط برای دیدن ساختار، بدون ذخیره‌سازی دائم):
-```bash
-sudo timeout 10 tcpdump -i any -n port 53
-```
-4. مسیر resolve یک دامنه را کامل ببین:
-```bash
-dig +trace example.com
-```
-5. جدول ARP و مسیریابی را بررسی کن:
-```bash
-ip neigh show
-ip route show
+sudo dhclient eth0            # درخواست دستی یک IP جدید از سرور DHCP روی این اینترفیس
+sudo dhclient -r eth0          # آزادسازی (release) IP فعلی — معادل ارسال یک پیام DHCPRELEASE به سرور
 ```
 
-## ۷) خلاصه جدولی
+## ۳.۵) نکات مهم آزمون برای 205.3
 
-| مفهوم | ابزار مدرن | ابزار سنتی |
+- ✅ فرآیند DORA را دقیق و به‌ترتیب حفظ کن: Discover (broadcast) → Offer → Request (broadcast) → Ack.
+- ✅ چرا مرحله‌ی Request هم broadcast است — به‌خاطر احتمال چند سرور DHCP روی یک شبکه.
+- ✅ تفاوت `default-lease-time` (پیش‌فرض) و `max-lease-time` (سقف مطلق).
+- ✅ مفهوم DHCP Reservation (`host {} + hardware ethernet + fixed-address`) را دقیق بشناس — سؤال رایج سناریومحور.
+- ✅ همیشه `dhcpd -t -cf` قبل از فعال‌سازی واقعی برای تست syntax.
+- ✅ فایل lease های فعال: `/var/lib/dhcp/dhcpd.leases`.
+
+---
+
+## خلاصه‌ی جدولی نهایی کل Topic 205
+
+| زیرمبحث | مفهوم کلیدی | ابزار/فایل |
 |---|---|---|
-| آدرس IP | `ip addr` | `ifconfig` |
-| مسیریابی | `ip route` | `route` |
-| DNS lookup | `dig` | `nslookup`, `host` |
-| اتصال شبکه | `nmcli`, systemd-networkd | `/etc/network/interfaces` |
-| ضبط ترافیک | `tcpdump` | - |
-| DHCP کلاینت | `dhclient` | - |
-| DHCP سرور | `dhcpd` (`/etc/dhcpd.conf`) | - |
+| 205.1 | ابزار یکپارچه مدرن | `ip addr/link/route` (جانشین net-tools) |
+| 205.1 | پیکربندی پایدار | `/etc/network/interfaces`(Debian)، `ifcfg-*`(RH)، `.network`(systemd) |
+| 205.1 | نام‌گذاری پایدار | `enp3s0` بر اساس موقعیت فیزیکی، نه ترتیب شناسایی |
+| 205.2 | رویکرد سیستماتیک | لینک→IP→gateway→خارجی→DNS→پورت |
+| 205.2 | DNS | `dig`, `dig +trace`, `host`, `nslookup`(deprecated) |
+| 205.2 | پورت/اتصال | `ss -tulnp` |
+| 205.2 | ضبط ترافیک | `tcpdump`, فیلترهای BPF (ملاحظات قانونی!) |
+| 205.3 | فرآیند DHCP | DORA: Discover→Offer→Request→Ack |
+| 205.3 | تنظیمات سرور | `/etc/dhcpd.conf`: range, lease-time, reservation |
+| 205.3 | لاگ اجاره‌ها | `/var/lib/dhcp/dhcpd.leases` |
 
-## ۸) مایندمپ متنی
+## مایندمپ متنی کامل
 
 ```
 Topic 205: Networking Configuration
+│
 ├── 205.1 Basic Configuration
-│   ├── ip addr / ip link / ip route
-│   ├── nmcli, systemd-networkd
-│   └── legacy: /etc/network/interfaces
+│   ├── مدل لایه‌ای: App→Transport→Network→DataLink→Physical
+│   ├── ip addr/link/route (جانشین ifconfig/route/arp)
+│   ├── پایدارسازی: interfaces(Debian)/ifcfg(RH)/.network(systemd)
+│   └── نام‌گذاری پایدار: enpXsY بر اساس موقعیت فیزیکی
+│
 ├── 205.2 Troubleshooting
-│   ├── ping / traceroute / mtr
-│   ├── tcpdump (BPF filters)
-│   └── dig / host / nslookup
-└── 205.3 DHCP
-    ├── DORA process
-    ├── dhclient (client)
-    └── dhcpd + /etc/dhcpd.conf (server)
+│   ├── رویکرد لایه‌به‌لایه (پایین به بالا)
+│   ├── ping(ICMP)/traceroute(TTL)/mtr(ترکیبی)
+│   ├── DNS: dig/dig+trace/host/nslookup
+│   ├── ss -tulnp (t/u/l/n/p هرکدام معنا)
+│   └── tcpdump + فیلتر BPF (⚠️ ملاحظات قانونی)
+│
+└── 205.3 DHCP Server
+    ├── DORA: Discover(bcast)→Offer→Request(bcast)→Ack
+    ├── /etc/dhcpd.conf: range/lease-time/routers/dns
+    ├── DHCP Reservation: host{hardware ethernet+fixed-address}
+    ├── dhcpd -t -cf (تست قبل فعال‌سازی)
+    └── dhcpd.leases (لاگ اجاره‌ها فعلی)
 ```
